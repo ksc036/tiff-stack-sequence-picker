@@ -81,7 +81,9 @@ export default function App() {
   const [previousPage, setPreviousPage] = useState(null);
   const [directorySessionId, setDirectorySessionId] = useState(0);
   const [status, setStatus] = useState(statusText("idle", "Choose a folder of TIFF frames."));
-  const [busy, setBusy] = useState(false);
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [frameBusy, setFrameBusy] = useState(false);
+  const [selectionBusy, setSelectionBusy] = useState(false);
   const [building, setBuilding] = useState(false);
   const stackCache = useRef(new Map());
   const directorySessionRef = useRef(0);
@@ -99,6 +101,7 @@ export default function App() {
   const currentSelection = currentFile ? selections.get(currentFile.name) : null;
   const selectedCount = files.filter((file) => selections.has(file.name)).length;
   const allSelected = files.length > 0 && selectedCount === files.length;
+  const busy = folderBusy || frameBusy || selectionBusy;
 
   const progress = useMemo(() => {
     if (files.length === 0) return 0;
@@ -139,10 +142,11 @@ export default function App() {
       if (!currentFile) {
         setCurrentTiff(null);
         setPreviousPage(null);
+        setFrameBusy(false);
         return;
       }
 
-      setBusy(true);
+      setFrameBusy(true);
       try {
         const stack = await loadStack(currentFile);
         if (cancelled) return;
@@ -168,7 +172,7 @@ export default function App() {
           setStatus(statusText("error", error.message));
         }
       } finally {
-        if (!cancelled) setBusy(false);
+        if (!cancelled) setFrameBusy(false);
       }
     }
 
@@ -179,17 +183,21 @@ export default function App() {
   }, [currentFile, currentIndex, directorySessionId, files, loadStack, selections]);
 
   async function openFolder() {
-    setBusy(true);
+    setFolderBusy(true);
     setStatus(statusText("idle", "Waiting for folder permission..."));
     try {
       const handle = await chooseTiffDirectory();
       const nextSessionId = directorySessionRef.current + 1;
       directorySessionRef.current = nextSessionId;
-      setDirectorySessionId(nextSessionId);
-      stackCache.current.clear();
+      setDirectoryHandle(null);
+      setFiles([]);
+      setSelections(new Map());
+      setCurrentIndex(0);
+      setCurrentStack(1);
       setCurrentTiff(null);
       setPreviousPage(null);
-      setCurrentStack(1);
+      setDirectorySessionId(nextSessionId);
+      stackCache.current.clear();
       const tiffFiles = await listDirectTiffFiles(handle);
       let restored = new Map();
       try {
@@ -223,14 +231,14 @@ export default function App() {
     } catch (error) {
       setStatus(statusText("error", error.message));
     } finally {
-      setBusy(false);
+      setFolderBusy(false);
     }
   }
 
   async function confirmCurrentSelection() {
     if (!currentFile || !decodedCurrentTiff || !currentPage) return;
 
-    setBusy(true);
+    setSelectionBusy(true);
     try {
       const next = setStackSelection(selections, currentFile.name, currentStack, decodedCurrentTiff.stackCount);
       setSelections(next);
@@ -240,7 +248,7 @@ export default function App() {
     } catch (error) {
       setStatus(statusText("error", error.message));
     } finally {
-      setBusy(false);
+      setSelectionBusy(false);
     }
   }
 
@@ -368,7 +376,7 @@ export default function App() {
               <Check size={18} aria-hidden="true" />
               Confirm{currentIndex < files.length - 1 ? " & Next" : ""}
             </button>
-            <button className="build-button" onClick={buildResult} disabled={!allSelected || building}>
+            <button className="build-button" onClick={buildResult} disabled={!allSelected || building || busy}>
               <Hammer size={18} aria-hidden="true" />
               Build Result
             </button>

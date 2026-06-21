@@ -46,6 +46,16 @@ function directoryHandle(entries = []) {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("App", () => {
   let originalShowDirectoryPicker;
   let originalGetContext;
@@ -190,5 +200,51 @@ describe("App", () => {
 
     await waitFor(() => expect(folderB.files.get("stack-selections.csv").writes[0]).toContain("same.tif,1,2"));
     expect(folderB.files.get("stack-selections.csv").writes[0]).not.toContain("same.tif,1,1");
+  });
+
+  it("clears old folder state and keeps actions disabled while the next folder is still listing", async () => {
+    const folderAFile = fileHandle("folder-a.tif", makeClassicGrayTiff());
+    const folderBFile = fileHandle("folder-b.tif", makeClassicGrayTiff());
+    const folderA = directoryHandle([folderAFile]);
+    const listingStarted = deferred();
+    const finishListing = deferred();
+    const folderB = {
+      ...directoryHandle([folderBFile]),
+      async *values() {
+        listingStarted.resolve();
+        await finishListing.promise;
+        yield folderBFile;
+      }
+    };
+    window.showDirectoryPicker = vi.fn().mockResolvedValueOnce(folderA).mockResolvedValueOnce(folderB);
+
+    render(<App />);
+
+    const openFolder = screen.getByRole("button", { name: /open folder/i });
+    fireEvent.click(openFolder);
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.getByRole("button", { name: /build result/i })).toBeEnabled());
+
+    fireEvent.click(openFolder);
+    await listingStarted.promise;
+
+    await waitFor(() => expect(screen.queryByText("folder-a.tif")).not.toBeInTheDocument());
+    expect(confirm).toBeDisabled();
+    expect(screen.getByRole("button", { name: /build result/i })).toBeDisabled();
+    fireEvent.click(confirm);
+    fireEvent.click(screen.getByRole("button", { name: /build result/i }));
+    expect(folderA.files.get("stack-selections.csv").writes).toHaveLength(2);
+    expect(folderB.files.get("stack-selections.csv")).toBeUndefined();
+
+    finishListing.resolve();
+    await screen.findByText("folder-b.tif");
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    fireEvent.click(confirm);
+    await waitFor(() => expect(folderB.files.get("stack-selections.csv").writes[0]).toContain("folder-b.tif,1,1"));
   });
 });
