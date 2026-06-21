@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
 import { makeClassicGrayTiff } from "./lib/tiffTestFixtures.js";
@@ -66,6 +66,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    cleanup();
     window.showDirectoryPicker = originalShowDirectoryPicker;
     HTMLCanvasElement.prototype.getContext = originalGetContext;
     globalThis.ImageData = originalImageData;
@@ -97,5 +98,39 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /build result/i })).toBeDisabled();
     expect(dir.files.get("stack-selections.csv").writes[0]).toContain("good.tif,1,1");
     expect(dir.files.get("stack-selections.csv").writes[0]).not.toContain("malformed.tif");
+  });
+
+  it("does not confirm stale decoded TIFF state while the next file is still decoding", async () => {
+    const good = fileHandle("a-good.tif", makeClassicGrayTiff());
+    let delayedReadCount = 0;
+    const delayed = {
+      ...fileHandle("z-delayed.tif", makeClassicGrayTiff()),
+      async getFile() {
+        delayedReadCount += 1;
+        if (delayedReadCount === 1) throw new Error("preload skipped");
+        return new Promise(() => {});
+      }
+    };
+    const dir = directoryHandle([good, delayed]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    fireEvent.click(confirm);
+
+    expect(await screen.findByText(/z-delayed\.tif/i)).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: /current frame/i })).getByText(/no frame loaded/i)).toBeInTheDocument();
+    expect(confirm).toBeDisabled();
+
+    fireEvent.click(confirm);
+
+    expect(screen.queryByLabelText(/selected stack for z-delayed\.tif/i)).not.toBeInTheDocument();
+    expect(dir.files.get("stack-selections.csv").writes[0]).toContain("a-good.tif,1,1");
+    expect(dir.files.get("stack-selections.csv").writes[0]).not.toContain("z-delayed.tif");
   });
 });

@@ -85,7 +85,8 @@ export default function App() {
   const stackCache = useRef(new Map());
 
   const currentFile = files[currentIndex] ?? null;
-  const currentPage = currentTiff?.pages[currentStack - 1] ?? null;
+  const decodedCurrentTiff = currentTiff?.filename === currentFile?.name ? currentTiff : null;
+  const currentPage = decodedCurrentTiff?.pages[currentStack - 1] ?? null;
   const currentSelection = currentFile ? selections.get(currentFile.name) : null;
   const selectedCount = files.filter((file) => selections.has(file.name)).length;
   const allSelected = files.length > 0 && selectedCount === files.length;
@@ -203,7 +204,7 @@ export default function App() {
   }
 
   async function confirmCurrentSelection() {
-    if (!currentFile || !currentTiff || !currentPage) return;
+    if (!currentFile || !currentTiff || currentTiff.filename !== currentFile.name || !currentPage) return;
 
     setBusy(true);
     try {
@@ -319,8 +320,8 @@ export default function App() {
           <section className="control-strip" aria-label="Current stack controls">
             <button
               className="icon-button"
-              onClick={() => setCurrentStack((stack) => clamp(stack - 1, 1, currentTiff?.stackCount ?? 1))}
-              disabled={!currentTiff || currentStack <= 1}
+              onClick={() => setCurrentStack((stack) => clamp(stack - 1, 1, decodedCurrentTiff?.stackCount ?? 1))}
+              disabled={!decodedCurrentTiff || currentStack <= 1}
               title="Previous stack"
             >
               <ChevronLeft size={18} aria-hidden="true" />
@@ -328,13 +329,13 @@ export default function App() {
             <div className="stack-readout">
               <span>Current stack</span>
               <strong>
-                {currentTiff ? currentStack : "-"} / {currentTiff?.stackCount ?? "-"}
+                {decodedCurrentTiff ? currentStack : "-"} / {decodedCurrentTiff?.stackCount ?? "-"}
               </strong>
             </div>
             <button
               className="icon-button"
-              onClick={() => setCurrentStack((stack) => clamp(stack + 1, 1, currentTiff?.stackCount ?? 1))}
-              disabled={!currentTiff || currentStack >= currentTiff.stackCount}
+              onClick={() => setCurrentStack((stack) => clamp(stack + 1, 1, decodedCurrentTiff?.stackCount ?? 1))}
+              disabled={!decodedCurrentTiff || currentStack >= decodedCurrentTiff.stackCount}
               title="Next stack"
             >
               <ChevronRight size={18} aria-hidden="true" />
