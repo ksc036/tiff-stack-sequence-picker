@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseStackSelectionsCsv,
+  restoreStackSelectionsForLoadedTiffs,
   serializeStackSelectionsCsv,
   setStackSelection
 } from "./stackSelections.js";
@@ -42,5 +43,36 @@ describe("stack selections CSV", () => {
   it("rejects invalid one-based selected stacks", () => {
     expect(() => setStackSelection(new Map(), "a.tif", 0, 3)).toThrow(/selected stack/i);
     expect(() => setStackSelection(new Map(), "a.tif", 4, 3)).toThrow(/selected stack/i);
+  });
+
+  it("restores saved selections clamped to the actual decoded stack count", () => {
+    const savedRows = new Map([
+      ["a.tif", { filename: "a.tif", selectedStack: 4, stackCount: 8 }],
+      ["b.tif", { filename: "b.tif", selectedStack: 1, stackCount: 1 }]
+    ]);
+
+    expect(
+      restoreStackSelectionsForLoadedTiffs(savedRows, [
+        { name: "a.tif", stackCount: 3 },
+        { name: "b.tif", stackCount: 5 }
+      ])
+    ).toEqual(
+      new Map([
+        ["a.tif", { filename: "a.tif", selectedStack: 3, stackCount: 3 }],
+        ["b.tif", { filename: "b.tif", selectedStack: 1, stackCount: 5 }]
+      ])
+    );
+  });
+
+  it("restores only rows for loaded TIFF files", () => {
+    const savedRows = new Map([
+      ["a.tif", { filename: "a.tif", selectedStack: 2, stackCount: 4 }],
+      ["missing.tif", { filename: "missing.tif", selectedStack: 1, stackCount: 1 }],
+      ["failed-decode.tif", { filename: "failed-decode.tif", selectedStack: 1, stackCount: 1 }]
+    ]);
+
+    expect(restoreStackSelectionsForLoadedTiffs(savedRows, [{ name: "a.tif", stackCount: 4 }])).toEqual(
+      new Map([["a.tif", { filename: "a.tif", selectedStack: 2, stackCount: 4 }]])
+    );
   });
 });

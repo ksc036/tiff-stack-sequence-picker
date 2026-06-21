@@ -44,6 +44,10 @@ function parsePositiveInteger(value, label) {
   return number;
 }
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
 export function parseStackSelectionsCsv(text = "") {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!normalized) return new Map();
@@ -90,4 +94,19 @@ export function setStackSelection(rows, filename, selectedStack, stackCount) {
   const next = new Map(rows);
   next.set(filename, { filename, selectedStack: nextSelectedStack, stackCount: nextStackCount });
   return next;
+}
+
+export function restoreStackSelectionsForLoadedTiffs(rows, loadedTiffs) {
+  return loadedTiffs.reduce((restored, file) => {
+    const row = rows.get(file.name);
+    if (!row) return restored;
+
+    const stackCount = parsePositiveInteger(file.stackCount, "stack count");
+    restored.set(file.name, {
+      filename: file.name,
+      selectedStack: clamp(row.selectedStack, 1, stackCount),
+      stackCount
+    });
+    return restored;
+  }, new Map());
 }

@@ -18,6 +18,7 @@ import {
 import { buildResultSequence } from "./lib/resultSequence.js";
 import {
   parseStackSelectionsCsv,
+  restoreStackSelectionsForLoadedTiffs,
   serializeStackSelectionsCsv,
   setStackSelection
 } from "./lib/stackSelections.js";
@@ -167,6 +168,16 @@ export default function App() {
         restored = new Map();
       }
       stackCache.current.clear();
+      const loadedTiffs = [];
+      for (const fileHandle of tiffFiles) {
+        try {
+          const stack = await loadStack(fileHandle);
+          loadedTiffs.push({ name: fileHandle.name, stackCount: stack.stackCount });
+        } catch (error) {
+          // Failed TIFFs remain visible, but cannot contribute a restored selection.
+        }
+      }
+      restored = restoreStackSelectionsForLoadedTiffs(restored, loadedTiffs);
       setDirectoryHandle(handle);
       setFiles(tiffFiles);
       setSelections(restored);
