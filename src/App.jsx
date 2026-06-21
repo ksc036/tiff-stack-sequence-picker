@@ -79,13 +79,22 @@ export default function App() {
   const [currentStack, setCurrentStack] = useState(1);
   const [currentTiff, setCurrentTiff] = useState(null);
   const [previousPage, setPreviousPage] = useState(null);
+  const [directorySessionId, setDirectorySessionId] = useState(0);
   const [status, setStatus] = useState(statusText("idle", "Choose a folder of TIFF frames."));
   const [busy, setBusy] = useState(false);
   const [building, setBuilding] = useState(false);
   const stackCache = useRef(new Map());
+  const directorySessionRef = useRef(0);
+  const fileHandleIds = useRef(new WeakMap());
+  const nextFileHandleId = useRef(1);
 
   const currentFile = files[currentIndex] ?? null;
-  const decodedCurrentTiff = currentTiff?.filename === currentFile?.name ? currentTiff : null;
+  const decodedCurrentTiff =
+    currentTiff?.filename === currentFile?.name &&
+    currentTiff?.directorySessionId === directorySessionId &&
+    currentTiff?.fileHandle === currentFile
+      ? currentTiff
+      : null;
   const currentPage = decodedCurrentTiff?.pages[currentStack - 1] ?? null;
   const currentSelection = currentFile ? selections.get(currentFile.name) : null;
   const selectedCount = files.filter((file) => selections.has(file.name)).length;
@@ -96,15 +105,24 @@ export default function App() {
     return Math.round((selectedCount / files.length) * 100);
   }, [files.length, selectedCount]);
 
-  const loadStack = useCallback(async (fileHandle) => {
+  const getFileHandleId = useCallback((fileHandle) => {
+    if (!fileHandleIds.current.has(fileHandle)) {
+      fileHandleIds.current.set(fileHandle, nextFileHandleId.current);
+      nextFileHandleId.current += 1;
+    }
+    return fileHandleIds.current.get(fileHandle);
+  }, []);
+
+  const loadStack = useCallback(async (fileHandle, sessionId = directorySessionId) => {
     if (!fileHandle) return null;
-    if (stackCache.current.has(fileHandle.name)) return stackCache.current.get(fileHandle.name);
+    const cacheKey = `${sessionId}:${getFileHandleId(fileHandle)}`;
+    if (stackCache.current.has(cacheKey)) return stackCache.current.get(cacheKey);
 
     const file = await fileHandle.getFile();
     const stack = decodeTiffStack(await file.arrayBuffer(), fileHandle.name);
-    stackCache.current.set(fileHandle.name, stack);
+    stackCache.current.set(cacheKey, stack);
     return stack;
-  }, []);
+  }, [directorySessionId, getFileHandleId]);
 
   const persistSelections = useCallback(
     async (rows) => {
@@ -129,7 +147,7 @@ export default function App() {
         const stack = await loadStack(currentFile);
         if (cancelled) return;
 
-        setCurrentTiff(stack);
+        setCurrentTiff({ ...stack, directorySessionId, fileHandle: currentFile });
         const saved = selections.get(currentFile.name)?.selectedStack;
         const previousSaved =
           currentIndex > 0 ? selections.get(files[currentIndex - 1]?.name)?.selectedStack : undefined;
@@ -158,13 +176,20 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentFile, currentIndex, files, loadStack, selections]);
+  }, [currentFile, currentIndex, directorySessionId, files, loadStack, selections]);
 
   async function openFolder() {
     setBusy(true);
     setStatus(statusText("idle", "Waiting for folder permission..."));
     try {
       const handle = await chooseTiffDirectory();
+      const nextSessionId = directorySessionRef.current + 1;
+      directorySessionRef.current = nextSessionId;
+      setDirectorySessionId(nextSessionId);
+      stackCache.current.clear();
+      setCurrentTiff(null);
+      setPreviousPage(null);
+      setCurrentStack(1);
       const tiffFiles = await listDirectTiffFiles(handle);
       let restored = new Map();
       try {
@@ -172,11 +197,10 @@ export default function App() {
       } catch (error) {
         restored = new Map();
       }
-      stackCache.current.clear();
       const loadedTiffs = [];
       for (const fileHandle of tiffFiles) {
         try {
-          const stack = await loadStack(fileHandle);
+          const stack = await loadStack(fileHandle, nextSessionId);
           loadedTiffs.push({ name: fileHandle.name, stackCount: stack.stackCount });
         } catch (error) {
           // Failed TIFFs remain visible, but cannot contribute a restored selection.
@@ -204,11 +228,11 @@ export default function App() {
   }
 
   async function confirmCurrentSelection() {
-    if (!currentFile || !currentTiff || currentTiff.filename !== currentFile.name || !currentPage) return;
+    if (!currentFile || !decodedCurrentTiff || !currentPage) return;
 
     setBusy(true);
     try {
-      const next = setStackSelection(selections, currentFile.name, currentStack, currentTiff.stackCount);
+      const next = setStackSelection(selections, currentFile.name, currentStack, decodedCurrentTiff.stackCount);
       setSelections(next);
       await persistSelections(next);
       setStatus(statusText("ok", `Saved ${currentFile.name} stack ${currentStack}.`));

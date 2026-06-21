@@ -133,4 +133,62 @@ describe("App", () => {
     expect(dir.files.get("stack-selections.csv").writes[0]).toContain("a-good.tif,1,1");
     expect(dir.files.get("stack-selections.csv").writes[0]).not.toContain("z-delayed.tif");
   });
+
+  it("does not reuse decoded state or cache entries across folders with the same TIFF filename", async () => {
+    const folderAFile = fileHandle("same.tif", makeClassicGrayTiff({ pages: [[0, 0, 0, 0]] }));
+    const folderBBuffer = makeClassicGrayTiff({
+      pages: [
+        [16, 16, 16, 16],
+        [240, 240, 240, 240]
+      ]
+    });
+    let folderBReadCount = 0;
+    let finishFolderBDecode;
+    const folderBFile = {
+      ...fileHandle("same.tif", folderBBuffer),
+      async getFile() {
+        folderBReadCount += 1;
+        if (folderBReadCount === 1) throw new Error("preload skipped");
+        return new Promise((resolve) => {
+          finishFolderBDecode = () =>
+            resolve({
+              arrayBuffer: async () => folderBBuffer,
+              text: async () => ""
+            });
+        });
+      }
+    };
+    const folderA = directoryHandle([folderAFile]);
+    const folderB = directoryHandle([folderBFile]);
+    window.showDirectoryPicker = vi.fn().mockResolvedValueOnce(folderA).mockResolvedValueOnce(folderB);
+
+    render(<App />);
+
+    const openFolder = screen.getByRole("button", { name: /open folder/i });
+    fireEvent.click(openFolder);
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(folderA.files.get("stack-selections.csv").writes[0]).toContain("same.tif,1,1"));
+
+    fireEvent.click(openFolder);
+
+    await waitFor(() => expect(openFolder).toBeEnabled());
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(folderB.files.get("stack-selections.csv")).toBeUndefined();
+
+    finishFolderBDecode();
+    await waitFor(() => expect(screen.getByText("1 / 2")).toBeInTheDocument());
+    expect(screen.queryByLabelText(/selected stack for same\.tif/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(folderB.files.get("stack-selections.csv").writes[0]).toContain("same.tif,1,2"));
+    expect(folderB.files.get("stack-selections.csv").writes[0]).not.toContain("same.tif,1,1");
+  });
 });
