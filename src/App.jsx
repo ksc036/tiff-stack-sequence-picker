@@ -143,7 +143,11 @@ export default function App() {
           setPreviousPage(null);
         }
       } catch (error) {
-        if (!cancelled) setStatus(statusText("error", error.message));
+        if (!cancelled) {
+          setCurrentTiff(null);
+          setCurrentStack(1);
+          setStatus(statusText("error", error.message));
+        }
       } finally {
         if (!cancelled) setBusy(false);
       }
