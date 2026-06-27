@@ -40,8 +40,10 @@ function directoryHandle(entries = []) {
       if (!files.has(name)) throw new Error(`missing ${name}`);
       return files.get(name);
     },
-    async getDirectoryHandle() {
-      return directoryHandle();
+    async getDirectoryHandle(name, options = {}) {
+      if (!files.has(name) && options.create) files.set(name, directoryHandle());
+      if (!files.has(name)) throw new Error(`missing ${name}`);
+      return files.get(name);
     }
   };
 }
@@ -105,19 +107,51 @@ describe("App", () => {
     fireEvent.click(confirm);
 
     expect(screen.queryByLabelText(/selected stack for malformed\.tif/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /build result/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /build result/i })).toBeEnabled();
     expect(dir.files.get("stack-selections.csv").writes[0]).toContain("good.tif,1,1");
     expect(dir.files.get("stack-selections.csv").writes[0]).not.toContain("malformed.tif");
   });
 
+  it("does not preload every TIFF when opening a folder", async () => {
+    let firstReadCount = 0;
+    let secondReadCount = 0;
+    const firstBuffer = makeClassicGrayTiff();
+    const first = {
+      ...fileHandle("a-current.tif", firstBuffer),
+      async getFile() {
+        firstReadCount += 1;
+        return {
+          arrayBuffer: async () => firstBuffer,
+          text: async () => ""
+        };
+      }
+    };
+    const second = {
+      ...fileHandle("b-large.tif", makeClassicGrayTiff()),
+      async getFile() {
+        secondReadCount += 1;
+        throw new Error("large TIFF should not be read during folder open");
+      }
+    };
+    const dir = directoryHandle([first, second]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    await screen.findByText(/Loaded 2 TIFF frames/i);
+    await waitFor(() => expect(screen.getByText("1 / 1")).toBeInTheDocument());
+
+    expect(firstReadCount).toBe(1);
+    expect(secondReadCount).toBe(0);
+  });
+
   it("does not confirm stale decoded TIFF state while the next file is still decoding", async () => {
     const good = fileHandle("a-good.tif", makeClassicGrayTiff());
-    let delayedReadCount = 0;
     const delayed = {
       ...fileHandle("z-delayed.tif", makeClassicGrayTiff()),
       async getFile() {
-        delayedReadCount += 1;
-        if (delayedReadCount === 1) throw new Error("preload skipped");
         return new Promise(() => {});
       }
     };
@@ -152,13 +186,10 @@ describe("App", () => {
         [240, 240, 240, 240]
       ]
     });
-    let folderBReadCount = 0;
     let finishFolderBDecode;
     const folderBFile = {
       ...fileHandle("same.tif", folderBBuffer),
       async getFile() {
-        folderBReadCount += 1;
-        if (folderBReadCount === 1) throw new Error("preload skipped");
         return new Promise((resolve) => {
           finishFolderBDecode = () =>
             resolve({
@@ -246,5 +277,37 @@ describe("App", () => {
 
     fireEvent.click(confirm);
     await waitFor(() => expect(folderB.files.get("stack-selections.csv").writes[0]).toContain("folder-b.tif,1,1"));
+  });
+
+  it("allows building a result from a partial selection", async () => {
+    const selected = fileHandle("a-selected.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }));
+    const skipped = {
+      ...fileHandle("b-skipped.tif", makeClassicGrayTiff({ pages: [[9, 9, 9, 9]] })),
+      async getFile() {
+        throw new Error("unselected TIFF should not be read by build");
+      }
+    };
+    const dir = directoryHandle([selected, skipped]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    fireEvent.click(confirm);
+
+    const build = screen.getByRole("button", { name: /build result/i });
+    await waitFor(() => expect(build).toBeEnabled());
+    fireEvent.click(build);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Built result\/selected-stack-sequence\.tif.*with 1 pages/i)).toBeInTheDocument()
+    );
+    const resultDir = dir.files.get("result");
+    expect(resultDir.files.get("stack-selections.csv").writes[0]).toBe(
+      "filename,selected_stack,stack_count\na-selected.tif,1,1\n"
+    );
   });
 });

@@ -13,6 +13,15 @@ function sourceFile(name, buffer) {
   };
 }
 
+function unreadableSourceFile(name) {
+  return {
+    name,
+    async getFile() {
+      throw new Error(`${name} should be skipped`);
+    }
+  };
+}
+
 describe("result sequence builder", () => {
   it("writes one selected grayscale page per source file in filename order", async () => {
     const files = [
@@ -38,6 +47,56 @@ describe("result sequence builder", () => {
       [20, 21, 22, 23]
     ]);
     expect(writes.find((write) => write.name === "stack-selections.csv").text).toContain("b.tif,2,2");
+  });
+
+  it("clamps stale saved selections to the closest available stack while building results", async () => {
+    const files = [
+      sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4], [5, 6, 7, 8]] }))
+    ];
+    const selections = parseStackSelectionsCsv("filename,selected_stack,stack_count\na.tif,4,4\n");
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    await buildResultSequence({ directoryHandle: "root", files, selections, io });
+
+    const tiffWrite = writes.find((write) => write.name === "selected-stack-sequence.tif");
+    const decoded = decodeTiffStack(tiffWrite.data.buffer, "selected-stack-sequence.tif");
+    expect([...decoded.pages[0].pixels]).toEqual([5, 6, 7, 8]);
+    expect(writes.find((write) => write.name === "stack-selections.csv").text).toContain("a.tif,2,2");
+  });
+
+  it("builds only selected files and skips unselected frames in the middle", async () => {
+    const files = [
+      sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] })),
+      unreadableSourceFile("b-skipped.tif"),
+      sourceFile("c.tif", makeClassicGrayTiff({ pages: [[9, 10, 11, 12]] }))
+    ];
+    const selections = parseStackSelectionsCsv(
+      "filename,selected_stack,stack_count\na.tif,1,1\nc.tif,1,1\n"
+    );
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    const result = await buildResultSequence({ directoryHandle: "root", files, selections, io });
+
+    const tiffWrite = writes.find((write) => write.name === "selected-stack-sequence.tif");
+    const decoded = decodeTiffStack(tiffWrite.data.buffer, "selected-stack-sequence.tif");
+    expect(result.pageCount).toBe(2);
+    expect(decoded.pages.map((page) => [...page.pixels])).toEqual([
+      [1, 2, 3, 4],
+      [9, 10, 11, 12]
+    ]);
+    expect(writes.find((write) => write.name === "stack-selections.csv").text).toBe(
+      "filename,selected_stack,stack_count\na.tif,1,1\nc.tif,1,1\n"
+    );
   });
 
   it("rejects incompatible pages before writing partial result files", async () => {

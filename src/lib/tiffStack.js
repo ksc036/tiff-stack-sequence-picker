@@ -5,6 +5,20 @@ const TYPE_SIZES = new Map([
   [4, 4]
 ]);
 
+const DECODED_PAGE_TAGS = new Set([
+  256,
+  257,
+  258,
+  259,
+  262,
+  273,
+  277,
+  279,
+  284,
+  320,
+  339
+]);
+
 function getView(input) {
   if (input instanceof ArrayBuffer) {
     return new DataView(input);
@@ -57,6 +71,14 @@ function getRequiredScalar(tags, tag, label) {
   return value;
 }
 
+function allValuesEqual(values, expected) {
+  return values.every((value) => value === expected);
+}
+
+function colorMapSampleToByte(value) {
+  return Math.round(value / 257);
+}
+
 function copyStrips(view, offsets, counts, expectedByteLength) {
   const totalByteLength = counts.reduce((sum, count) => sum + count, 0);
   if (totalByteLength !== expectedByteLength) {
@@ -107,33 +129,49 @@ export function decodeTiffStack(input, filename = "TIFF file") {
     for (let index = 0; index < entryCount; index += 1) {
       const entryOffset = ifdOffset + 2 + index * 12;
       const tag = view.getUint16(entryOffset, littleEndian);
+      if (!DECODED_PAGE_TAGS.has(tag)) continue;
       tags.set(tag, readEntryValues(view, entryOffset, littleEndian));
     }
 
     const width = getRequiredScalar(tags, 256, "ImageWidth");
     const height = getRequiredScalar(tags, 257, "ImageLength");
     const bitsPerSample = getRequiredScalar(tags, 258, "BitsPerSample");
+    const bitsPerSampleValues = tags.get(258)?.values ?? [bitsPerSample];
     const compression = scalar(tags, 259, 1);
     const photometric = getRequiredScalar(tags, 262, "PhotometricInterpretation");
     const samplesPerPixel = scalar(tags, 277, 1);
+    const planarConfiguration = scalar(tags, 284, 1);
     const sampleFormat = scalar(tags, 339, 1);
+    const sampleFormatValues = tags.get(339)?.values ?? [sampleFormat];
+    const colorMap = tags.get(320)?.values;
     const stripOffsets = tags.get(273)?.values;
     const stripByteCounts = tags.get(279)?.values;
 
     if (compression !== 1) throw new Error(`${filename} must use uncompressed TIFF pages`);
-    if (samplesPerPixel !== 1) throw new Error(`${filename} must be grayscale`);
+    if (samplesPerPixel !== 1 && samplesPerPixel !== 3) {
+      throw new Error(`${filename} must use single-channel grayscale or RGB samples`);
+    }
     if (bitsPerSample !== 8 && bitsPerSample !== 16) {
-      throw new Error(`${filename} must use 8-bit or 16-bit grayscale samples`);
+      throw new Error(`${filename} must use 8-bit or 16-bit samples`);
     }
-    if (photometric !== 0 && photometric !== 1) {
-      throw new Error(`${filename} must use black-is-zero or white-is-zero photometric interpretation`);
+    if (!allValuesEqual(bitsPerSampleValues, bitsPerSample)) {
+      throw new Error(`${filename} must use the same bit depth for every sample`);
     }
-    if (sampleFormat !== 1) throw new Error(`${filename} must use unsigned integer samples`);
+    if (samplesPerPixel === 1 && photometric === 3) {
+      if (bitsPerSample !== 8) throw new Error(`${filename} must use 8-bit palette color samples`);
+      if (!colorMap?.length) throw new Error(`${filename} must include a palette ColorMap`);
+      if (colorMap.length < 3 * 2 ** bitsPerSample) throw new Error(`${filename} has an incomplete palette ColorMap`);
+    } else if (samplesPerPixel === 1 && photometric !== 0 && photometric !== 1) {
+      throw new Error(`${filename} must use black-is-zero, white-is-zero, or palette-color photometric interpretation`);
+    }
+    if (samplesPerPixel === 3 && photometric !== 2) throw new Error(`${filename} must use RGB photometric interpretation`);
+    if (samplesPerPixel === 3 && planarConfiguration !== 1) throw new Error(`${filename} must use chunky RGB samples`);
+    if (!allValuesEqual(sampleFormatValues, 1)) throw new Error(`${filename} must use unsigned integer samples`);
     if (!stripOffsets?.length || !stripByteCounts?.length || stripOffsets.length !== stripByteCounts.length) {
       throw new Error(`${filename} has invalid strip metadata`);
     }
 
-    const expectedByteLength = width * height * (bitsPerSample / 8);
+    const expectedByteLength = width * height * samplesPerPixel * (bitsPerSample / 8);
     const bytes = copyStrips(view, stripOffsets, stripByteCounts, expectedByteLength);
     pages.push({
       filename,
@@ -143,6 +181,7 @@ export function decodeTiffStack(input, filename = "TIFF file") {
       bitsPerSample,
       samplesPerPixel,
       photometric,
+      colorMap,
       pixels: bytesToPixels(bytes, bitsPerSample, littleEndian)
     });
 
@@ -154,6 +193,34 @@ export function decodeTiffStack(input, filename = "TIFF file") {
 }
 
 export function normalizeGrayPageToRgba(page) {
+  if (page.samplesPerPixel === 3 && page.photometric === 2) {
+    const rgba = new Uint8ClampedArray(page.width * page.height * 4);
+    const scale = page.bitsPerSample === 16 ? 255 / 65535 : 1;
+    for (let index = 0; index < page.width * page.height; index += 1) {
+      const sourceOffset = index * 3;
+      const targetOffset = index * 4;
+      rgba[targetOffset] = Math.round(page.pixels[sourceOffset] * scale);
+      rgba[targetOffset + 1] = Math.round(page.pixels[sourceOffset + 1] * scale);
+      rgba[targetOffset + 2] = Math.round(page.pixels[sourceOffset + 2] * scale);
+      rgba[targetOffset + 3] = 255;
+    }
+    return rgba;
+  }
+
+  if (page.samplesPerPixel === 1 && page.photometric === 3) {
+    const rgba = new Uint8ClampedArray(page.width * page.height * 4);
+    const paletteSize = page.colorMap.length / 3;
+    for (let index = 0; index < page.width * page.height; index += 1) {
+      const paletteIndex = page.pixels[index];
+      const targetOffset = index * 4;
+      rgba[targetOffset] = colorMapSampleToByte(page.colorMap[paletteIndex] ?? 0);
+      rgba[targetOffset + 1] = colorMapSampleToByte(page.colorMap[paletteIndex + paletteSize] ?? 0);
+      rgba[targetOffset + 2] = colorMapSampleToByte(page.colorMap[paletteIndex + paletteSize * 2] ?? 0);
+      rgba[targetOffset + 3] = 255;
+    }
+    return rgba;
+  }
+
   const pixels = page.pixels;
   let min = Infinity;
   let max = -Infinity;

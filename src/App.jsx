@@ -18,7 +18,6 @@ import {
 import { buildResultSequence } from "./lib/resultSequence.js";
 import {
   parseStackSelectionsCsv,
-  restoreStackSelectionsForLoadedTiffs,
   serializeStackSelectionsCsv,
   setStackSelection
 } from "./lib/stackSelections.js";
@@ -32,6 +31,11 @@ function clamp(value, min, max) {
 
 function sortedSelectionRows(rows) {
   return new Map([...rows.entries()].sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function filterSelectionRowsForFiles(rows, files) {
+  const filenames = new Set(files.map((file) => file.name));
+  return new Map([...rows.entries()].filter(([filename]) => filenames.has(filename)));
 }
 
 function statusText(kind, text) {
@@ -100,7 +104,7 @@ export default function App() {
   const currentPage = decodedCurrentTiff?.pages[currentStack - 1] ?? null;
   const currentSelection = currentFile ? selections.get(currentFile.name) : null;
   const selectedCount = files.filter((file) => selections.has(file.name)).length;
-  const allSelected = files.length > 0 && selectedCount === files.length;
+  const hasSelections = selectedCount > 0;
   const busy = folderBusy || frameBusy || selectionBusy;
 
   const progress = useMemo(() => {
@@ -116,16 +120,31 @@ export default function App() {
     return fileHandleIds.current.get(fileHandle);
   }, []);
 
+  const stackCacheKey = useCallback(
+    (fileHandle, sessionId = directorySessionId) => `${sessionId}:${getFileHandleId(fileHandle)}`,
+    [directorySessionId, getFileHandleId]
+  );
+
+  const pruneStackCache = useCallback(
+    (sessionId, fileHandles) => {
+      const keepKeys = new Set(fileHandles.filter(Boolean).map((fileHandle) => stackCacheKey(fileHandle, sessionId)));
+      for (const key of stackCache.current.keys()) {
+        if (key.startsWith(`${sessionId}:`) && !keepKeys.has(key)) stackCache.current.delete(key);
+      }
+    },
+    [stackCacheKey]
+  );
+
   const loadStack = useCallback(async (fileHandle, sessionId = directorySessionId) => {
     if (!fileHandle) return null;
-    const cacheKey = `${sessionId}:${getFileHandleId(fileHandle)}`;
+    const cacheKey = stackCacheKey(fileHandle, sessionId);
     if (stackCache.current.has(cacheKey)) return stackCache.current.get(cacheKey);
 
     const file = await fileHandle.getFile();
     const stack = decodeTiffStack(await file.arrayBuffer(), fileHandle.name);
     stackCache.current.set(cacheKey, stack);
     return stack;
-  }, [directorySessionId, getFileHandleId]);
+  }, [directorySessionId, stackCacheKey]);
 
   const persistSelections = useCallback(
     async (rows) => {
@@ -152,19 +171,33 @@ export default function App() {
         if (cancelled) return;
 
         setCurrentTiff({ ...stack, directorySessionId, fileHandle: currentFile });
-        const saved = selections.get(currentFile.name)?.selectedStack;
+        const savedRow = selections.get(currentFile.name);
+        const saved = savedRow ? clamp(savedRow.selectedStack, 1, stack.stackCount) : undefined;
         const previousSaved =
           currentIndex > 0 ? selections.get(files[currentIndex - 1]?.name)?.selectedStack : undefined;
         setCurrentStack(clamp(saved ?? previousSaved ?? 1, 1, stack.stackCount));
+        if (savedRow && (savedRow.selectedStack !== saved || savedRow.stackCount !== stack.stackCount)) {
+          setSelections((rows) => {
+            const currentRow = rows.get(currentFile.name);
+            if (!currentRow) return rows;
+            const selectedStack = clamp(currentRow.selectedStack, 1, stack.stackCount);
+            if (currentRow.selectedStack === selectedStack && currentRow.stackCount === stack.stackCount) return rows;
+            return setStackSelection(rows, currentFile.name, selectedStack, stack.stackCount);
+          });
+        }
 
         const previousFile = files[currentIndex - 1];
         const previousRow = previousFile ? selections.get(previousFile.name) : null;
         if (previousFile && previousRow) {
           const previousStack = await loadStack(previousFile);
-          if (!cancelled) setPreviousPage(previousStack.pages[previousRow.selectedStack - 1]);
+          if (!cancelled) {
+            const previousStackNumber = clamp(previousRow.selectedStack, 1, previousStack.stackCount);
+            setPreviousPage(previousStack.pages[previousStackNumber - 1]);
+          }
         } else {
           setPreviousPage(null);
         }
+        pruneStackCache(directorySessionId, [currentFile, previousFile]);
       } catch (error) {
         if (!cancelled) {
           setCurrentTiff(null);
@@ -180,7 +213,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentFile, currentIndex, directorySessionId, files, loadStack, selections]);
+  }, [currentFile, currentIndex, directorySessionId, files, loadStack, pruneStackCache, selections]);
 
   async function openFolder() {
     setFolderBusy(true);
@@ -205,16 +238,7 @@ export default function App() {
       } catch (error) {
         restored = new Map();
       }
-      const loadedTiffs = [];
-      for (const fileHandle of tiffFiles) {
-        try {
-          const stack = await loadStack(fileHandle, nextSessionId);
-          loadedTiffs.push({ name: fileHandle.name, stackCount: stack.stackCount });
-        } catch (error) {
-          // Failed TIFFs remain visible, but cannot contribute a restored selection.
-        }
-      }
-      restored = restoreStackSelectionsForLoadedTiffs(restored, loadedTiffs);
+      restored = filterSelectionRowsForFiles(restored, tiffFiles);
       setDirectoryHandle(handle);
       setFiles(tiffFiles);
       setSelections(restored);
@@ -268,7 +292,7 @@ export default function App() {
   }
 
   async function buildResult() {
-    if (!directoryHandle || !allSelected) return;
+    if (!directoryHandle || !hasSelections) return;
     setBuilding(true);
     setStatus(statusText("idle", "Validating selected pages..."));
     try {
@@ -376,7 +400,7 @@ export default function App() {
               <Check size={18} aria-hidden="true" />
               Confirm{currentIndex < files.length - 1 ? " & Next" : ""}
             </button>
-            <button className="build-button" onClick={buildResult} disabled={!allSelected || building || busy}>
+            <button className="build-button" onClick={buildResult} disabled={!hasSelections || building || folderBusy || selectionBusy}>
               <Hammer size={18} aria-hidden="true" />
               Build Result
             </button>

@@ -17,17 +17,28 @@ function writeEntry(view, offset, tag, type, count, value) {
 }
 
 function assertPageShape(page) {
-  if (page.samplesPerPixel !== 1) throw new Error("Result TIFF supports grayscale pages only");
-  if (page.bitsPerSample !== 8 && page.bitsPerSample !== 16) {
-    throw new Error("Result TIFF supports only 8-bit or 16-bit grayscale pages");
+  if (page.samplesPerPixel !== 1 && page.samplesPerPixel !== 3) {
+    throw new Error("Result TIFF supports single-channel grayscale or RGB pages only");
   }
-  if (page.photometric !== 0 && page.photometric !== 1) {
-    throw new Error("Result TIFF supports photometric interpretation 0 or 1 only");
+  if (page.bitsPerSample !== 8 && page.bitsPerSample !== 16) {
+    throw new Error("Result TIFF supports only 8-bit or 16-bit pages");
+  }
+  if (page.samplesPerPixel === 1 && page.photometric === 3) {
+    if (page.bitsPerSample !== 8) throw new Error("Result TIFF supports only 8-bit palette-color pages");
+    if (!page.colorMap?.length) throw new Error("Result TIFF palette pages require a ColorMap");
+    if (page.colorMap.length < 3 * 2 ** page.bitsPerSample) {
+      throw new Error("Result TIFF palette pages require a complete ColorMap");
+    }
+  } else if (page.samplesPerPixel === 1 && page.photometric !== 0 && page.photometric !== 1) {
+    throw new Error("Result TIFF supports grayscale or palette-color single-channel pages only");
+  }
+  if (page.samplesPerPixel === 3 && page.photometric !== 2) {
+    throw new Error("Result TIFF supports RGB pages only when photometric interpretation is 2");
   }
 }
 
 function pageBytes(page) {
-  const expectedSamples = page.width * page.height;
+  const expectedSamples = page.width * page.height * page.samplesPerPixel;
   if (page.bitsPerSample === 8) {
     const pixels = page.pixels instanceof Uint8Array ? page.pixels : Uint8Array.from(page.pixels);
     if (pixels.length !== expectedSamples) throw new Error("Page pixel data does not match dimensions");
@@ -69,9 +80,13 @@ export function writeClassicGrayTiff(pages) {
   validatePages(pages);
 
   const pixelPages = pages.map(pageBytes);
-  const entriesPerIfd = 9;
+  const entriesPerIfd = 9 + (pages[0].samplesPerPixel > 1 ? 1 : 0) + (pages[0].photometric === 3 ? 1 : 0);
   const ifdByteLength = 2 + entriesPerIfd * 12 + 4;
-  const pixelStart = 8 + pages.length * ifdByteLength;
+  const bitsPerSampleExtraLength = pages[0].samplesPerPixel > 1 ? pages[0].samplesPerPixel * 2 : 0;
+  const colorMapExtraLength = pages[0].photometric === 3 ? pages[0].colorMap.length * 2 : 0;
+  const perPageExtraLength = bitsPerSampleExtraLength + colorMapExtraLength;
+  const extraStart = 8 + pages.length * ifdByteLength;
+  const pixelStart = extraStart + pages.length * perPageExtraLength;
   const totalPixelBytes = pixelPages.reduce((sum, bytes) => sum + bytes.byteLength, 0);
   const buffer = new ArrayBuffer(pixelStart + totalPixelBytes);
   const view = new DataView(buffer);
@@ -83,17 +98,31 @@ export function writeClassicGrayTiff(pages) {
   let stripOffset = pixelStart;
   pages.forEach((page, pageIndex) => {
     const ifdOffset = 8 + pageIndex * ifdByteLength;
+    const bitsPerSampleOffset = extraStart + pageIndex * perPageExtraLength;
+    const colorMapOffset = bitsPerSampleOffset + bitsPerSampleExtraLength;
     const stripByteCount = pixelPages[pageIndex].byteLength;
+    if (bitsPerSampleExtraLength) {
+      for (let index = 0; index < page.samplesPerPixel; index += 1) {
+        view.setUint16(bitsPerSampleOffset + index * 2, page.bitsPerSample, true);
+      }
+    }
+    if (colorMapExtraLength) {
+      page.colorMap.forEach((value, index) => {
+        view.setUint16(colorMapOffset + index * 2, value, true);
+      });
+    }
     const entries = [
       [256, 4, 1, page.width],
       [257, 4, 1, page.height],
-      [258, 3, 1, page.bitsPerSample],
+      [258, 3, page.samplesPerPixel, page.samplesPerPixel === 1 ? page.bitsPerSample : bitsPerSampleOffset],
       [259, 3, 1, 1],
       [262, 3, 1, page.photometric],
       [273, 4, 1, stripOffset],
-      [277, 3, 1, 1],
+      [277, 3, 1, page.samplesPerPixel],
       [278, 4, 1, page.height],
-      [279, 4, 1, stripByteCount]
+      [279, 4, 1, stripByteCount],
+      ...(page.samplesPerPixel > 1 ? [[284, 3, 1, 1]] : []),
+      ...(page.photometric === 3 ? [[320, 3, page.colorMap.length, colorMapOffset]] : [])
     ];
 
     view.setUint16(ifdOffset, entries.length, true);
