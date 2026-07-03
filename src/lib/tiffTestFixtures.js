@@ -24,9 +24,19 @@ function longValue(value) {
   return { type: 4, count: 1, value };
 }
 
-function asciiInlineValue(value) {
+function normalizeAsciiValue(value) {
+  return value.endsWith("\0") ? value : `${value}\0`;
+}
+
+function asciiValue(value, valueOffset) {
   const text = value.endsWith("\0") ? value : `${value}\0`;
-  if (text.length > 4) throw new Error("Test ASCII fixture values must fit inline");
+  if (text.length > 4) {
+    return {
+      type: 2,
+      count: text.length,
+      value: valueOffset
+    };
+  }
   return {
     type: 2,
     count: text.length,
@@ -67,7 +77,9 @@ export function makeClassicGrayTiff({
   const bitsPerSampleValues = Array.from({ length: samplesPerPixel }, () => bitsPerSample);
   const bitsPerSampleExtraLength = bitsPerSampleValues.length * 2 > 4 ? bitsPerSampleValues.length * 2 : 0;
   const colorMapExtraLength = colorMap ? colorMap.length * 2 : 0;
-  const perPageExtraLength = bitsPerSampleExtraLength + colorMapExtraLength;
+  const descriptionText = description ? normalizeAsciiValue(description) : "";
+  const descriptionExtraLength = descriptionText.length > 4 ? descriptionText.length : 0;
+  const perPageExtraLength = bitsPerSampleExtraLength + colorMapExtraLength + descriptionExtraLength;
   const entriesPerIfd = 9 + (description ? 1 : 0) + (samplesPerPixel > 1 ? 1 : 0) + (colorMap ? 1 : 0);
   const ifdByteLength = 2 + entriesPerIfd * 12 + 4;
   const extraStart = 8 + pages.length * ifdByteLength;
@@ -84,6 +96,7 @@ export function makeClassicGrayTiff({
     const ifdOffset = 8 + pageIndex * ifdByteLength;
     const bitsPerSampleOffset = extraStart + pageIndex * perPageExtraLength;
     const colorMapOffset = bitsPerSampleOffset + bitsPerSampleExtraLength;
+    const descriptionOffset = colorMapOffset + colorMapExtraLength;
     const stripOffset = pixelStart + pageIndex * pageByteLength;
     view.setUint16(ifdOffset, entriesPerIfd, true);
     if (bitsPerSampleExtraLength) {
@@ -96,13 +109,16 @@ export function makeClassicGrayTiff({
         view.setUint16(colorMapOffset + index * 2, value, true);
       });
     }
+    if (descriptionExtraLength) {
+      writeAscii(view, descriptionOffset, descriptionText);
+    }
     const entries = [
       [256, longValue(width)],
       [257, longValue(height)],
       [258, shortArrayValue(bitsPerSampleValues, bitsPerSampleOffset)],
       [259, shortValue(1)],
       [262, shortValue(photometric)],
-      ...(description ? [[270, asciiInlineValue(description)]] : []),
+      ...(description ? [[270, asciiValue(description, descriptionOffset)]] : []),
       [273, longValue(stripOffset)],
       [277, shortValue(samplesPerPixel)],
       [278, longValue(height)],

@@ -21,7 +21,8 @@ import {
   serializeStackSelectionsCsv,
   setStackSelection
 } from "./lib/stackSelections.js";
-import { decodeTiffStack, normalizeGrayPageToRgba } from "./lib/tiffStack.js";
+import { fetchRaw16TiffPage } from "./lib/raw16Client.js";
+import { renderRaw16ToCanvas } from "./lib/raw16Renderer.js";
 
 const CSV_NAME = "stack-selections.csv";
 
@@ -48,11 +49,13 @@ function TiffCanvas({ title, subtitle, page }) {
   useEffect(() => {
     if (!page || !canvasRef.current) return;
     const canvas = canvasRef.current;
-    const context = canvas.getContext("2d");
-    canvas.width = page.width;
-    canvas.height = page.height;
-    const imageData = new ImageData(normalizeGrayPageToRgba(page), page.width, page.height);
-    context.putImageData(imageData, 0, 0);
+    renderRaw16ToCanvas(canvas, {
+      pixels: page.pixels,
+      width: page.width,
+      height: page.height,
+      min: page.displayMin,
+      max: page.displayMax
+    });
   }, [page]);
 
   return (
@@ -82,6 +85,7 @@ export default function App() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentStack, setCurrentStack] = useState(1);
   const [currentTiff, setCurrentTiff] = useState(null);
+  const [currentPage, setCurrentPage] = useState(null);
   const [previousPage, setPreviousPage] = useState(null);
   const [directorySessionId, setDirectorySessionId] = useState(0);
   const [status, setStatus] = useState(statusText("idle", "Choose a folder of TIFF frames."));
@@ -101,7 +105,13 @@ export default function App() {
     currentTiff?.fileHandle === currentFile
       ? currentTiff
       : null;
-  const currentPage = decodedCurrentTiff?.pages[currentStack - 1] ?? null;
+  const visibleCurrentPage =
+    currentPage?.filename === currentFile?.name &&
+    currentPage?.directorySessionId === directorySessionId &&
+    currentPage?.fileHandle === currentFile &&
+    currentPage?.stackNumber === currentStack
+      ? currentPage
+      : null;
   const currentSelection = currentFile ? selections.get(currentFile.name) : null;
   const selectedCount = files.filter((file) => selections.has(file.name)).length;
   const hasSelections = selectedCount > 0;
@@ -120,29 +130,50 @@ export default function App() {
     return fileHandleIds.current.get(fileHandle);
   }, []);
 
-  const stackCacheKey = useCallback(
-    (fileHandle, sessionId = directorySessionId) => `${sessionId}:${getFileHandleId(fileHandle)}`,
+  const stackCachePrefix = useCallback(
+    (fileHandle, sessionId = directorySessionId) => `${sessionId}:${getFileHandleId(fileHandle)}:`,
     [directorySessionId, getFileHandleId]
+  );
+
+  const stackCacheKey = useCallback(
+    (fileHandle, stackNumber, sessionId = directorySessionId) =>
+      `${stackCachePrefix(fileHandle, sessionId)}${Math.max(1, Number(stackNumber) || 1)}`,
+    [directorySessionId, stackCachePrefix]
   );
 
   const pruneStackCache = useCallback(
     (sessionId, fileHandles) => {
-      const keepKeys = new Set(fileHandles.filter(Boolean).map((fileHandle) => stackCacheKey(fileHandle, sessionId)));
+      const keepPrefixes = fileHandles.filter(Boolean).map((fileHandle) => stackCachePrefix(fileHandle, sessionId));
       for (const key of stackCache.current.keys()) {
-        if (key.startsWith(`${sessionId}:`) && !keepKeys.has(key)) stackCache.current.delete(key);
+        if (key.startsWith(`${sessionId}:`) && !keepPrefixes.some((prefix) => key.startsWith(prefix))) {
+          stackCache.current.delete(key);
+        }
       }
     },
-    [stackCacheKey]
+    [stackCachePrefix]
   );
 
-  const loadStack = useCallback(async (fileHandle, sessionId = directorySessionId) => {
+  const loadStack = useCallback(async (fileHandle, requestedStack = 1, sessionId = directorySessionId) => {
     if (!fileHandle) return null;
-    const cacheKey = stackCacheKey(fileHandle, sessionId);
+    const requestStack = Math.max(1, Number(requestedStack) || 1);
+    const cacheKey = stackCacheKey(fileHandle, requestStack, sessionId);
     if (stackCache.current.has(cacheKey)) return stackCache.current.get(cacheKey);
 
     const file = await fileHandle.getFile();
-    const stack = decodeTiffStack(await file.arrayBuffer(), fileHandle.name);
+    const raw = await fetchRaw16TiffPage(file, requestStack);
+    const page = {
+      ...raw.page,
+      filename: fileHandle.name,
+      directorySessionId: sessionId,
+      fileHandle
+    };
+    const stack = {
+      filename: fileHandle.name,
+      stackCount: raw.stackCount,
+      page
+    };
     stackCache.current.set(cacheKey, stack);
+    stackCache.current.set(stackCacheKey(fileHandle, page.stackNumber, sessionId), stack);
     return stack;
   }, [directorySessionId, stackCacheKey]);
 
@@ -160,23 +191,26 @@ export default function App() {
     async function loadCurrentFrame() {
       if (!currentFile) {
         setCurrentTiff(null);
+        setCurrentPage(null);
         setPreviousPage(null);
         setFrameBusy(false);
         return;
       }
 
       setFrameBusy(true);
+      setCurrentTiff(null);
+      setCurrentPage(null);
       try {
-        const stack = await loadStack(currentFile);
-        if (cancelled) return;
-
-        setCurrentTiff({ ...stack, directorySessionId, fileHandle: currentFile });
         const savedRow = selections.get(currentFile.name);
-        const saved = savedRow ? clamp(savedRow.selectedStack, 1, stack.stackCount) : undefined;
         const previousSaved =
           currentIndex > 0 ? selections.get(files[currentIndex - 1]?.name)?.selectedStack : undefined;
-        setCurrentStack(clamp(saved ?? previousSaved ?? 1, 1, stack.stackCount));
-        if (savedRow && (savedRow.selectedStack !== saved || savedRow.stackCount !== stack.stackCount)) {
+        const stack = await loadStack(currentFile, savedRow?.selectedStack ?? previousSaved ?? 1);
+        if (cancelled) return;
+
+        setCurrentTiff({ filename: stack.filename, stackCount: stack.stackCount, directorySessionId, fileHandle: currentFile });
+        setCurrentStack(stack.page.stackNumber);
+        setCurrentPage(stack.page);
+        if (savedRow && (savedRow.selectedStack !== stack.page.stackNumber || savedRow.stackCount !== stack.stackCount)) {
           setSelections((rows) => {
             const currentRow = rows.get(currentFile.name);
             if (!currentRow) return rows;
@@ -189,10 +223,9 @@ export default function App() {
         const previousFile = files[currentIndex - 1];
         const previousRow = previousFile ? selections.get(previousFile.name) : null;
         if (previousFile && previousRow) {
-          const previousStack = await loadStack(previousFile);
+          const previousStack = await loadStack(previousFile, previousRow.selectedStack);
           if (!cancelled) {
-            const previousStackNumber = clamp(previousRow.selectedStack, 1, previousStack.stackCount);
-            setPreviousPage(previousStack.pages[previousStackNumber - 1]);
+            setPreviousPage(previousStack.page);
           }
         } else {
           setPreviousPage(null);
@@ -201,6 +234,7 @@ export default function App() {
       } catch (error) {
         if (!cancelled) {
           setCurrentTiff(null);
+          setCurrentPage(null);
           setCurrentStack(1);
           setStatus(statusText("error", error.message));
         }
@@ -228,6 +262,7 @@ export default function App() {
       setCurrentIndex(0);
       setCurrentStack(1);
       setCurrentTiff(null);
+      setCurrentPage(null);
       setPreviousPage(null);
       setDirectorySessionId(nextSessionId);
       stackCache.current.clear();
@@ -260,7 +295,7 @@ export default function App() {
   }
 
   async function confirmCurrentSelection() {
-    if (!currentFile || !decodedCurrentTiff || !currentPage) return;
+    if (!currentFile || !decodedCurrentTiff || !visibleCurrentPage) return;
 
     setSelectionBusy(true);
     try {
@@ -288,6 +323,23 @@ export default function App() {
       setStatus(statusText("ok", `Updated ${filename}.`));
     } catch (error) {
       setStatus(statusText("error", error.message));
+    }
+  }
+
+  async function showCurrentStack(stackNumber) {
+    if (!currentFile || !decodedCurrentTiff) return;
+    const requestedStack = clamp(stackNumber, 1, decodedCurrentTiff.stackCount);
+    setFrameBusy(true);
+    setCurrentPage(null);
+    try {
+      const stack = await loadStack(currentFile, requestedStack);
+      setCurrentTiff({ filename: stack.filename, stackCount: stack.stackCount, directorySessionId, fileHandle: currentFile });
+      setCurrentStack(stack.page.stackNumber);
+      setCurrentPage(stack.page);
+    } catch (error) {
+      setStatus(statusText("error", error.message));
+    } finally {
+      setFrameBusy(false);
     }
   }
 
@@ -369,15 +421,15 @@ export default function App() {
             <TiffCanvas
               title="Current Frame"
               subtitle={currentFile ? `${currentFile.name} / stack ${currentStack}` : "No folder opened"}
-              page={currentPage}
+              page={visibleCurrentPage}
             />
           </div>
 
           <section className="control-strip" aria-label="Current stack controls">
             <button
               className="icon-button"
-              onClick={() => setCurrentStack((stack) => clamp(stack - 1, 1, decodedCurrentTiff?.stackCount ?? 1))}
-              disabled={!decodedCurrentTiff || currentStack <= 1}
+              onClick={() => showCurrentStack(currentStack - 1)}
+              disabled={!decodedCurrentTiff || currentStack <= 1 || frameBusy}
               title="Previous stack"
             >
               <ChevronLeft size={18} aria-hidden="true" />
@@ -390,13 +442,13 @@ export default function App() {
             </div>
             <button
               className="icon-button"
-              onClick={() => setCurrentStack((stack) => clamp(stack + 1, 1, decodedCurrentTiff?.stackCount ?? 1))}
-              disabled={!decodedCurrentTiff || currentStack >= decodedCurrentTiff.stackCount}
+              onClick={() => showCurrentStack(currentStack + 1)}
+              disabled={!decodedCurrentTiff || currentStack >= decodedCurrentTiff.stackCount || frameBusy}
               title="Next stack"
             >
               <ChevronRight size={18} aria-hidden="true" />
             </button>
-            <button className="confirm-button" onClick={confirmCurrentSelection} disabled={!currentPage || busy}>
+            <button className="confirm-button" onClick={confirmCurrentSelection} disabled={!visibleCurrentPage || busy}>
               <Check size={18} aria-hidden="true" />
               Confirm{currentIndex < files.length - 1 ? " & Next" : ""}
             </button>

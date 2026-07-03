@@ -2,6 +2,41 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
 import { makeClassicGrayTiff } from "./lib/tiffTestFixtures.js";
+import { readGrey16RawFromTiffBuffer } from "../server/imageProcessing.js";
+
+function arrayBufferFromBuffer(buffer) {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+}
+
+async function raw16Fetch(url, options = {}) {
+  const requestUrl = new URL(url, "http://localhost");
+  const stackNumber = Number(requestUrl.searchParams.get("stackNumber") ?? 1);
+  const file = options.body;
+
+  try {
+    const raw = await readGrey16RawFromTiffBuffer(Buffer.from(file.__buffer), { stackNumber });
+    return {
+      ok: true,
+      headers: new Headers({
+        "x-image-width": String(raw.width),
+        "x-image-height": String(raw.height),
+        "x-stack-count": String(raw.stackCount),
+        "x-stack-number": String(raw.stackNumber),
+        "x-display-min": String(raw.min),
+        "x-display-max": String(raw.max),
+        "x-pixel-format": raw.pixelFormat
+      }),
+      arrayBuffer: async () => arrayBufferFromBuffer(raw.buffer)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      headers: new Headers(),
+      json: async () => ({ error: error.message }),
+      text: async () => error.message
+    };
+  }
+}
 
 function fileHandle(name, buffer, text = "") {
   const writes = [];
@@ -11,6 +46,9 @@ function fileHandle(name, buffer, text = "") {
     writes,
     async getFile() {
       return {
+        name,
+        type: "image/tiff",
+        __buffer: buffer,
         arrayBuffer: async () => buffer,
         text: async () => text
       };
@@ -67,7 +105,14 @@ describe("App", () => {
     originalShowDirectoryPicker = window.showDirectoryPicker;
     originalGetContext = HTMLCanvasElement.prototype.getContext;
     originalImageData = globalThis.ImageData;
-    HTMLCanvasElement.prototype.getContext = vi.fn(() => ({ putImageData: vi.fn() }));
+    HTMLCanvasElement.prototype.getContext = vi.fn((type) =>
+      type === "2d"
+        ? {
+            createImageData: vi.fn((width, height) => new ImageData(new Uint8ClampedArray(width * height * 4), width, height)),
+            putImageData: vi.fn()
+          }
+        : null
+    );
     globalThis.ImageData = class ImageData {
       constructor(data, width, height) {
         this.data = data;
@@ -75,6 +120,7 @@ describe("App", () => {
         this.height = height;
       }
     };
+    vi.stubGlobal("fetch", vi.fn(raw16Fetch));
   });
 
   afterEach(() => {
@@ -82,6 +128,7 @@ describe("App", () => {
     window.showDirectoryPicker = originalShowDirectoryPicker;
     HTMLCanvasElement.prototype.getContext = originalGetContext;
     globalThis.ImageData = originalImageData;
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -101,7 +148,7 @@ describe("App", () => {
     fireEvent.click(confirm);
 
     await screen.findByText(/malformed\.tif/i);
-    await waitFor(() => expect(screen.getByText(/malformed\.tif is not a classic TIFF file/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/unsupported image format/i)).toBeInTheDocument());
     await waitFor(() => expect(confirm).toBeDisabled());
 
     fireEvent.click(confirm);
@@ -121,6 +168,9 @@ describe("App", () => {
       async getFile() {
         firstReadCount += 1;
         return {
+          name: "a-current.tif",
+          type: "image/tiff",
+          __buffer: firstBuffer,
           arrayBuffer: async () => firstBuffer,
           text: async () => ""
         };
@@ -193,6 +243,9 @@ describe("App", () => {
         return new Promise((resolve) => {
           finishFolderBDecode = () =>
             resolve({
+              name: "same.tif",
+              type: "image/tiff",
+              __buffer: folderBBuffer,
               arrayBuffer: async () => folderBBuffer,
               text: async () => ""
             });
@@ -308,6 +361,50 @@ describe("App", () => {
     const resultDir = dir.files.get("result");
     expect(resultDir.files.get("stack-selections.csv").writes[0]).toBe(
       "filename,selected_stack,stack_count\na-selected.tif,1,1\n"
+    );
+  });
+
+  it("renders TIFF previews through the raw16 server path without client ArrayBuffer decoding", async () => {
+    const arrayBuffer = vi.fn(() => {
+      throw new Error("preview should not decode the TIFF in the browser");
+    });
+    const buffer = makeClassicGrayTiff({
+      bitsPerSample: 16,
+      pages: [
+        [1000, 1001, 1002, 1003],
+        [2000, 2001, 2002, 2003]
+      ]
+    });
+    const file = {
+      kind: "file",
+      name: "raw16-stack.tif",
+      async getFile() {
+        return {
+          name: "raw16-stack.tif",
+          type: "image/tiff",
+          __buffer: buffer,
+          arrayBuffer,
+          text: async () => ""
+        };
+      }
+    };
+    const dir = directoryHandle([file]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    await screen.findByText(/Loaded 1 TIFF frame/i);
+    await waitFor(() => expect(screen.getByText("1 / 2")).toBeInTheDocument());
+
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/tiff/raw16?stackNumber=1",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.objectContaining({ name: "raw16-stack.tif" })
+      })
     );
   });
 });

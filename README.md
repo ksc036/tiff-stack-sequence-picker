@@ -17,14 +17,32 @@ npm install
 ## Run Locally
 
 ```bash
-npm run dev -- --host 127.0.0.1
+npm run dev
 ```
 
-Open the URL shown by Vite:
+Open:
 
 ```text
 http://127.0.0.1:5173/
 ```
+
+The dev command starts one local Express server on `0.0.0.0:5173`. That server handles `/api/tiff/raw16` and also serves the Vite app.
+
+On another device in the same network, open the machine's LAN IP with the same port, for example:
+
+```text
+http://<this-computer-ip>:5173/
+```
+
+## TIFF Display Pipeline
+
+16-bit TIFF display follows `/Users/ksc/Documents/imageSegmentationUsingPen`:
+
+- The browser sends the selected TIFF file to the local `/api/tiff/raw16` endpoint.
+- The server reads the requested stack page as `grey16` raw pixels.
+- ImageJ `min` / `max` display metadata is used when present; otherwise the selected page pixel range is used.
+- The browser renders the 16-bit raw pixels with WebGL2 using display `min` / `max`.
+- A 2D canvas CPU mapping is used only when WebGL2 is unavailable.
 
 ## How To Use
 
