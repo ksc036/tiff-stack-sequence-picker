@@ -79,6 +79,12 @@ button:disabled {
   padding: 12px 0 18px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: var(--accent);
@@ -160,10 +166,18 @@ h1 {
   background: rgba(10, 13, 16, 0.86);
 }
 
+.workspace.rail-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .side-rail {
   border-right: 1px solid var(--line);
   background: #0d1114;
   min-width: 0;
+}
+
+.side-rail[hidden] {
+  display: none;
 }
 
 .progress-block {
@@ -289,6 +303,7 @@ h1 {
   display: grid;
   place-items: center;
   min-height: 0;
+  overflow: hidden;
   padding: 16px;
   background: #050709;
 }
@@ -300,6 +315,10 @@ h1 {
   image-rendering: pixelated;
   border: 1px solid #1a252b;
   background: #000;
+  cursor: crosshair;
+  transition:
+    transform 160ms ease,
+    transform-origin 160ms ease;
 }
 
 .canvas-stage p {
@@ -326,11 +345,16 @@ h1 {
 
 .stack-readout {
   display: grid;
-  min-width: 146px;
+  grid-template-columns: minmax(74px, auto) 72px;
+  column-gap: 10px;
+  row-gap: 4px;
+  align-items: center;
+  min-width: 190px;
   padding: 0 10px;
 }
 
 .stack-readout span {
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 11px;
 }
@@ -338,6 +362,37 @@ h1 {
 .stack-readout strong {
   margin-top: 2px;
   font-size: 18px;
+}
+
+.stack-jump-input {
+  width: 72px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 8px;
+  color: var(--text);
+  background: #070a0d;
+}
+
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 4px 0 10px;
+  border-left: 1px solid var(--line);
+}
+
+.zoom-controls input[type="range"] {
+  width: 112px;
+  accent-color: var(--accent);
+}
+
+.zoom-readout {
+  min-width: 44px;
+  color: var(--amber);
+  font-size: 12px;
+  text-align: center;
 }
 
 .selection-table {
@@ -402,6 +457,10 @@ h1 {
     flex-direction: column;
   }
 
+  .topbar-actions {
+    align-items: stretch;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
   }
@@ -430,6 +489,12 @@ h1 {
 
   .control-strip {
     flex-wrap: wrap;
+  }
+
+  .zoom-controls {
+    flex: 1 1 260px;
+    border-left: 0;
+    padding-left: 0;
   }
 
   .confirm-button,

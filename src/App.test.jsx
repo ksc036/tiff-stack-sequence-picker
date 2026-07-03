@@ -407,4 +407,110 @@ describe("App", () => {
       })
     );
   });
+
+  it("applies a shared zoom focus to both TIFF canvases and resets them together", async () => {
+    const first = fileHandle("a-first.tif", makeClassicGrayTiff({ bitsPerSample: 16 }));
+    const second = fileHandle("b-second.tif", makeClassicGrayTiff({ bitsPerSample: 16 }));
+    const dir = directoryHandle([first, second]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    fireEvent.click(confirm);
+
+    await screen.findByText(/b-second\.tif/i);
+    await waitFor(() => expect(screen.getByText("1 / 1")).toBeInTheDocument());
+
+    const previousCanvas = within(screen.getByRole("region", { name: /previous selection/i })).getByLabelText(
+      /tiff preview/i
+    );
+    const currentCanvas = within(screen.getByRole("region", { name: /current frame/i })).getByLabelText(
+      /tiff preview/i
+    );
+    const rect = {
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 100,
+      width: 100,
+      height: 100
+    };
+    previousCanvas.getBoundingClientRect = () => rect;
+    currentCanvas.getBoundingClientRect = () => rect;
+
+    fireEvent.click(currentCanvas, { clientX: 75, clientY: 25 });
+    fireEvent.click(screen.getByRole("button", { name: /zoom in/i }));
+
+    expect(previousCanvas.style.transform).toBe("scale(1.5)");
+    expect(currentCanvas.style.transform).toBe("scale(1.5)");
+    expect(previousCanvas.style.transformOrigin).toBe("75% 25%");
+    expect(currentCanvas.style.transformOrigin).toBe("75% 25%");
+
+    fireEvent.click(screen.getByRole("button", { name: /reset zoom/i }));
+
+    expect(previousCanvas.style.transform).toBe("scale(1)");
+    expect(currentCanvas.style.transform).toBe("scale(1)");
+    expect(previousCanvas.style.transformOrigin).toBe("50% 50%");
+    expect(currentCanvas.style.transformOrigin).toBe("50% 50%");
+  });
+
+  it("collapses and reopens the file list so the viewer can expand", async () => {
+    const file = fileHandle("single.tif", makeClassicGrayTiff());
+    const dir = directoryHandle([file]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+    await screen.findByText(/Loaded 1 TIFF frame/i);
+
+    const workspace = screen.getByLabelText(/TIFF workspace/i);
+    const fileRail = screen.getByRole("complementary", { name: /TIFF file list/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /hide file list/i }));
+
+    expect(workspace).toHaveClass("rail-collapsed");
+    expect(fileRail).toHaveAttribute("hidden");
+    expect(screen.getByRole("button", { name: /show file list/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /show file list/i }));
+
+    expect(workspace).not.toHaveClass("rail-collapsed");
+    expect(fileRail).not.toHaveAttribute("hidden");
+  });
+
+  it("lets the stack number be blank while typing before jumping to the requested stack", async () => {
+    const pages = Array.from({ length: 30 }, (_, index) => [index, index + 1, index + 2, index + 3]);
+    const file = fileHandle("thirty-stacks.tif", makeClassicGrayTiff({ bitsPerSample: 16, pages }));
+    const dir = directoryHandle([file]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    await screen.findByText(/Loaded 1 TIFF frame/i);
+    await waitFor(() => expect(screen.getByText("1 / 30")).toBeInTheDocument());
+
+    const stackInput = screen.getByRole("spinbutton", { name: /stack number/i });
+
+    fireEvent.change(stackInput, { target: { value: "" } });
+
+    expect(stackInput.value).toBe("");
+    expect(screen.getByText("1 / 30")).toBeInTheDocument();
+
+    fireEvent.change(stackInput, { target: { value: "25" } });
+
+    expect(stackInput.value).toBe("25");
+    expect(screen.getByText("1 / 30")).toBeInTheDocument();
+
+    fireEvent.keyDown(stackInput, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => expect(screen.getByText("25 / 30")).toBeInTheDocument());
+    expect(stackInput).toHaveValue(25);
+  });
 });

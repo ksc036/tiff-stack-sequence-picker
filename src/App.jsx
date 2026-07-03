@@ -6,7 +6,12 @@ import {
   ChevronRight,
   FolderOpen,
   Hammer,
-  Save
+  PanelLeftClose,
+  PanelLeftOpen,
+  RotateCcw,
+  Save,
+  ZoomIn,
+  ZoomOut
 } from "lucide-react";
 import {
   chooseTiffDirectory,
@@ -25,6 +30,9 @@ import { fetchRaw16TiffPage } from "./lib/raw16Client.js";
 import { renderRaw16ToCanvas } from "./lib/raw16Renderer.js";
 
 const CSV_NAME = "stack-selections.csv";
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 6;
+const ZOOM_STEP = 0.5;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -43,7 +51,11 @@ function statusText(kind, text) {
   return { kind, text };
 }
 
-function TiffCanvas({ title, subtitle, page }) {
+function percent(value) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function TiffCanvas({ title, subtitle, page, zoomScale, zoomFocus, onZoomFocus }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -57,6 +69,21 @@ function TiffCanvas({ title, subtitle, page }) {
       max: page.displayMax
     });
   }, [page]);
+
+  function handleCanvasClick(event) {
+    if (!page || !onZoomFocus) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    onZoomFocus({
+      x: clamp((event.clientX - rect.left) / rect.width, 0, 1),
+      y: clamp((event.clientY - rect.top) / rect.height, 0, 1)
+    });
+  }
+
+  const canvasStyle = {
+    transform: `scale(${zoomScale})`,
+    transformOrigin: `${percent(zoomFocus.x)} ${percent(zoomFocus.y)}`
+  };
 
   return (
     <section className="viewer-pane" aria-label={title}>
@@ -72,7 +99,16 @@ function TiffCanvas({ title, subtitle, page }) {
         ) : null}
       </div>
       <div className="canvas-stage">
-        {page ? <canvas ref={canvasRef} aria-label={`${title} TIFF preview`} /> : <p>No frame loaded</p>}
+        {page ? (
+          <canvas
+            ref={canvasRef}
+            aria-label={`${title} TIFF preview`}
+            onClick={handleCanvasClick}
+            style={canvasStyle}
+          />
+        ) : (
+          <p>No frame loaded</p>
+        )}
       </div>
     </section>
   );
@@ -84,9 +120,13 @@ export default function App() {
   const [selections, setSelections] = useState(new Map());
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentStack, setCurrentStack] = useState(1);
+  const [stackInput, setStackInput] = useState("1");
   const [currentTiff, setCurrentTiff] = useState(null);
   const [currentPage, setCurrentPage] = useState(null);
   const [previousPage, setPreviousPage] = useState(null);
+  const [sideRailCollapsed, setSideRailCollapsed] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
+  const [zoomFocus, setZoomFocus] = useState({ x: 0.5, y: 0.5 });
   const [directorySessionId, setDirectorySessionId] = useState(0);
   const [status, setStatus] = useState(statusText("idle", "Choose a folder of TIFF frames."));
   const [folderBusy, setFolderBusy] = useState(false);
@@ -116,6 +156,7 @@ export default function App() {
   const selectedCount = files.filter((file) => selections.has(file.name)).length;
   const hasSelections = selectedCount > 0;
   const busy = folderBusy || frameBusy || selectionBusy;
+  const canZoom = Boolean(visibleCurrentPage || previousPage);
 
   const progress = useMemo(() => {
     if (files.length === 0) return 0;
@@ -184,6 +225,10 @@ export default function App() {
     },
     [directoryHandle]
   );
+
+  useEffect(() => {
+    setStackInput(decodedCurrentTiff ? String(currentStack) : "");
+  }, [currentStack, decodedCurrentTiff?.filename, decodedCurrentTiff?.stackCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,9 +306,12 @@ export default function App() {
       setSelections(new Map());
       setCurrentIndex(0);
       setCurrentStack(1);
+      setStackInput("1");
       setCurrentTiff(null);
       setCurrentPage(null);
       setPreviousPage(null);
+      setZoomScale(1);
+      setZoomFocus({ x: 0.5, y: 0.5 });
       setDirectorySessionId(nextSessionId);
       stackCache.current.clear();
       const tiffFiles = await listDirectTiffFiles(handle);
@@ -343,6 +391,38 @@ export default function App() {
     }
   }
 
+  async function commitStackInput() {
+    if (!decodedCurrentTiff) {
+      setStackInput("");
+      return;
+    }
+    if (stackInput.trim() === "") {
+      setStackInput(String(currentStack));
+      return;
+    }
+    const nextStack = Number.parseInt(stackInput, 10);
+    if (!Number.isFinite(nextStack)) {
+      setStackInput(String(currentStack));
+      return;
+    }
+    await showCurrentStack(nextStack);
+  }
+
+  function handleStackInputKeyDown(event) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void commitStackInput();
+  }
+
+  function changeZoom(delta) {
+    setZoomScale((scale) => clamp(Number((scale + delta).toFixed(2)), MIN_ZOOM, MAX_ZOOM));
+  }
+
+  function resetZoom() {
+    setZoomScale(1);
+    setZoomFocus({ x: 0.5, y: 0.5 });
+  }
+
   async function buildResult() {
     if (!directoryHandle || !hasSelections) return;
     setBuilding(true);
@@ -369,10 +449,24 @@ export default function App() {
           <p className="eyebrow">TIFF z-stack sequence picker</p>
           <h1>Pick one stack plane per time frame</h1>
         </div>
-        <button className="primary-action" onClick={openFolder} disabled={busy || !supportsDirectoryPicker()}>
-          <FolderOpen size={18} aria-hidden="true" />
-          Open Folder
-        </button>
+        <div className="topbar-actions">
+          <button
+            className="icon-button"
+            onClick={() => setSideRailCollapsed((collapsed) => !collapsed)}
+            aria-label={sideRailCollapsed ? "Show file list" : "Hide file list"}
+            title={sideRailCollapsed ? "Show file list" : "Hide file list"}
+          >
+            {sideRailCollapsed ? (
+              <PanelLeftOpen size={18} aria-hidden="true" />
+            ) : (
+              <PanelLeftClose size={18} aria-hidden="true" />
+            )}
+          </button>
+          <button className="primary-action" onClick={openFolder} disabled={busy || !supportsDirectoryPicker()}>
+            <FolderOpen size={18} aria-hidden="true" />
+            Open Folder
+          </button>
+        </div>
       </header>
 
       {!supportsDirectoryPicker() ? (
@@ -387,8 +481,8 @@ export default function App() {
         {status.text}
       </section>
 
-      <section className="workspace">
-        <aside className="side-rail">
+      <section className={`workspace ${sideRailCollapsed ? "rail-collapsed" : ""}`} aria-label="TIFF workspace">
+        <aside className="side-rail" aria-label="TIFF file list" hidden={sideRailCollapsed}>
           <div className="progress-block">
             <span>{selectedCount} selected</span>
             <strong>{files.length} frames</strong>
@@ -417,11 +511,17 @@ export default function App() {
               title="Previous Selection"
               subtitle={previousPage ? `${previousPage.filename} / stack ${previousPage.stackNumber}` : "Fixed reference"}
               page={previousPage}
+              zoomScale={zoomScale}
+              zoomFocus={zoomFocus}
+              onZoomFocus={setZoomFocus}
             />
             <TiffCanvas
               title="Current Frame"
               subtitle={currentFile ? `${currentFile.name} / stack ${currentStack}` : "No folder opened"}
               page={visibleCurrentPage}
+              zoomScale={zoomScale}
+              zoomFocus={zoomFocus}
+              onZoomFocus={setZoomFocus}
             />
           </div>
 
@@ -439,6 +539,20 @@ export default function App() {
               <strong>
                 {decodedCurrentTiff ? currentStack : "-"} / {decodedCurrentTiff?.stackCount ?? "-"}
               </strong>
+              {decodedCurrentTiff ? (
+                <input
+                  aria-label="Stack number"
+                  className="stack-jump-input"
+                  type="number"
+                  min="1"
+                  max={decodedCurrentTiff.stackCount}
+                  value={stackInput}
+                  onChange={(event) => setStackInput(event.target.value)}
+                  onBlur={() => void commitStackInput()}
+                  onKeyDown={handleStackInputKeyDown}
+                  disabled={frameBusy}
+                />
+              ) : null}
             </div>
             <button
               className="icon-button"
@@ -452,6 +566,46 @@ export default function App() {
               <Check size={18} aria-hidden="true" />
               Confirm{currentIndex < files.length - 1 ? " & Next" : ""}
             </button>
+            <div className="zoom-controls" aria-label="Zoom controls">
+              <button
+                className="icon-button"
+                onClick={() => changeZoom(-ZOOM_STEP)}
+                disabled={!canZoom || zoomScale <= MIN_ZOOM}
+                aria-label="Zoom out"
+                title="Zoom out"
+              >
+                <ZoomOut size={18} aria-hidden="true" />
+              </button>
+              <input
+                aria-label="Zoom scale"
+                type="range"
+                min={MIN_ZOOM}
+                max={MAX_ZOOM}
+                step={ZOOM_STEP}
+                value={zoomScale}
+                onChange={(event) => setZoomScale(Number(event.target.value))}
+                disabled={!canZoom}
+              />
+              <span className="zoom-readout">{zoomScale.toFixed(1)}x</span>
+              <button
+                className="icon-button"
+                onClick={() => changeZoom(ZOOM_STEP)}
+                disabled={!canZoom || zoomScale >= MAX_ZOOM}
+                aria-label="Zoom in"
+                title="Zoom in"
+              >
+                <ZoomIn size={18} aria-hidden="true" />
+              </button>
+              <button
+                className="icon-button"
+                onClick={resetZoom}
+                disabled={!canZoom || (zoomScale === 1 && zoomFocus.x === 0.5 && zoomFocus.y === 0.5)}
+                aria-label="Reset zoom"
+                title="Reset zoom"
+              >
+                <RotateCcw size={18} aria-hidden="true" />
+              </button>
+            </div>
             <button className="build-button" onClick={buildResult} disabled={!hasSelections || building || folderBusy || selectionBusy}>
               <Hammer size={18} aria-hidden="true" />
               Build Result
