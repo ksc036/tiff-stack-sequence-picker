@@ -12,9 +12,29 @@ const defaultIo = {
   writeBinaryFile,
   writeTextFile
 };
+const DEFAULT_TIFF_FILENAME = "selected-stack-sequence.tif";
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function stripTiffExtension(filename) {
+  return String(filename ?? "").replace(/\.tiff?$/i, "");
+}
+
+function sanitizeFilename(filename) {
+  return String(filename ?? "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "_");
+}
+
+export function defaultResultNameFromFilename(filename) {
+  return stripTiffExtension(filename) || stripTiffExtension(DEFAULT_TIFF_FILENAME);
+}
+
+export function normalizeResultTiffFilename(outputName) {
+  const filename = sanitizeFilename(outputName) || DEFAULT_TIFF_FILENAME;
+  return /\.tiff?$/i.test(filename) ? filename : `${filename}.tif`;
 }
 
 async function readHandleBuffer(fileHandle) {
@@ -22,7 +42,7 @@ async function readHandleBuffer(fileHandle) {
   return file.arrayBuffer();
 }
 
-export async function buildResultSequence({ directoryHandle, files, selections, io = defaultIo }) {
+export async function buildResultSequence({ directoryHandle, files, selections, outputName, io = defaultIo }) {
   const filesByName = new Map(files.map((fileHandle) => [fileHandle.name, fileHandle]));
   const selectedRowsInFileOrder = [...selections.values()]
     .filter((row) => filesByName.has(row.filename))
@@ -49,14 +69,15 @@ export async function buildResultSequence({ directoryHandle, files, selections, 
 
   const outputTiff = writeClassicGrayTiff(selectedPages);
   const outputCsv = serializeStackSelectionsCsv(selectedRows);
+  const tiffFilename = normalizeResultTiffFilename(outputName);
 
   const resultDirectory = await io.ensureResultDirectory(directoryHandle);
-  await io.writeBinaryFile(resultDirectory, "selected-stack-sequence.tif", outputTiff);
+  await io.writeBinaryFile(resultDirectory, tiffFilename, outputTiff);
   await io.writeTextFile(resultDirectory, "stack-selections.csv", outputCsv);
 
   return {
     pageCount: selectedPages.length,
-    tiffFilename: "selected-stack-sequence.tif",
+    tiffFilename,
     csvFilename: "stack-selections.csv"
   };
 }

@@ -51,12 +51,13 @@ http://<this-computer-ip>:5173/
 3. The files are sorted by filename. Earlier filenames are treated as earlier time frames.
 4. Use the stack arrow buttons to choose the z-stack for the current frame.
 5. Click `Confirm & Next` to save that frame's selected stack.
-6. You can skip frames by not confirming them. `Build Result` only includes confirmed selections, so the result can start in the middle and can skip unnecessary frames.
-7. Click `Build Result`.
+6. The `Result name` field is filled from the first confirmed TIFF filename. Edit it before building if you want a shorter or cleaner output name.
+7. You can skip frames by not confirming them. `Build Result` only includes confirmed selections, so the result can start in the middle and can skip unnecessary frames.
+8. Click `Build Result`.
 
 The app writes output files to a `result` folder inside the selected TIFF folder:
 
-- `selected-stack-sequence.tif`
+- `<result-name>.tif`
 - `stack-selections.csv`
 
 Selections are also saved to `stack-selections.csv` in the source folder while you work, so you can reopen the folder and continue or edit previous choices.

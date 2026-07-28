@@ -388,6 +388,30 @@ h1 {
   accent-color: var(--accent);
 }
 
+.result-name-field {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 220px;
+  max-width: 340px;
+  min-width: 190px;
+}
+
+.result-name-field span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.result-name-field input {
+  width: 100%;
+  height: 30px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 8px;
+  color: var(--text);
+  background: #070a0d;
+}
+
 .zoom-readout {
   min-width: 44px;
   color: var(--amber);

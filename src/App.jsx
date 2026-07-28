@@ -20,7 +20,7 @@ import {
   supportsDirectoryPicker,
   writeTextFile
 } from "./lib/localTiffDirectory.js";
-import { buildResultSequence } from "./lib/resultSequence.js";
+import { buildResultSequence, defaultResultNameFromFilename } from "./lib/resultSequence.js";
 import {
   parseStackSelectionsCsv,
   serializeStackSelectionsCsv,
@@ -121,6 +121,8 @@ export default function App() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentStack, setCurrentStack] = useState(1);
   const [stackInput, setStackInput] = useState("1");
+  const [resultName, setResultName] = useState("");
+  const [resultNameEdited, setResultNameEdited] = useState(false);
   const [currentTiff, setCurrentTiff] = useState(null);
   const [currentPage, setCurrentPage] = useState(null);
   const [previousPage, setPreviousPage] = useState(null);
@@ -307,6 +309,8 @@ export default function App() {
       setCurrentIndex(0);
       setCurrentStack(1);
       setStackInput("1");
+      setResultName("");
+      setResultNameEdited(false);
       setCurrentTiff(null);
       setCurrentPage(null);
       setPreviousPage(null);
@@ -322,9 +326,12 @@ export default function App() {
         restored = new Map();
       }
       restored = filterSelectionRowsForFiles(restored, tiffFiles);
+      const firstRestoredSelection = [...sortedSelectionRows(restored).keys()][0];
       setDirectoryHandle(handle);
       setFiles(tiffFiles);
       setSelections(restored);
+      setResultName(firstRestoredSelection ? defaultResultNameFromFilename(firstRestoredSelection) : "");
+      setResultNameEdited(false);
       setCurrentIndex(0);
       setCurrentStack(1);
       setStatus(
@@ -349,6 +356,9 @@ export default function App() {
     try {
       const next = setStackSelection(selections, currentFile.name, currentStack, decodedCurrentTiff.stackCount);
       setSelections(next);
+      if (!hasSelections && !resultNameEdited) {
+        setResultName(defaultResultNameFromFilename(currentFile.name));
+      }
       await persistSelections(next);
       setStatus(statusText("ok", `Saved ${currentFile.name} stack ${currentStack}.`));
       if (currentIndex < files.length - 1) setCurrentIndex((index) => index + 1);
@@ -428,7 +438,9 @@ export default function App() {
     setBuilding(true);
     setStatus(statusText("idle", "Validating selected pages..."));
     try {
-      const result = await buildResultSequence({ directoryHandle, files, selections });
+      const firstSelectedFilename = [...sortedSelectionRows(selections).keys()][0];
+      const outputName = resultName.trim() || defaultResultNameFromFilename(firstSelectedFilename);
+      const result = await buildResultSequence({ directoryHandle, files, selections, outputName });
       setStatus(
         statusText(
           "ok",
@@ -606,6 +618,19 @@ export default function App() {
                 <RotateCcw size={18} aria-hidden="true" />
               </button>
             </div>
+            <label className="result-name-field">
+              <span>Result name</span>
+              <input
+                aria-label="Result image name"
+                type="text"
+                value={resultName}
+                onChange={(event) => {
+                  setResultName(event.target.value);
+                  setResultNameEdited(true);
+                }}
+                disabled={!hasSelections || building || folderBusy}
+              />
+            </label>
             <button className="build-button" onClick={buildResult} disabled={!hasSelections || building || folderBusy || selectionBusy}>
               <Hammer size={18} aria-hidden="true" />
               Build Result

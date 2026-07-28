@@ -356,12 +356,41 @@ describe("App", () => {
     fireEvent.click(build);
 
     await waitFor(() =>
-      expect(screen.getByText(/Built result\/selected-stack-sequence\.tif.*with 1 pages/i)).toBeInTheDocument()
+      expect(screen.getByText(/Built result\/a-selected\.tif.*with 1 pages/i)).toBeInTheDocument()
     );
     const resultDir = dir.files.get("result");
     expect(resultDir.files.get("stack-selections.csv").writes[0]).toBe(
       "filename,selected_stack,stack_count\na-selected.tif,1,1\n"
     );
+  });
+
+  it("defaults the result image name from the first confirmed TIFF and lets it be edited before building", async () => {
+    const selected = fileHandle("250110.134214.col den.001.05.A1.S001_HT3D_0.tiff", makeClassicGrayTiff());
+    const dir = directoryHandle([selected]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    const resultName = await screen.findByRole("textbox", { name: /result image name/i });
+    expect(resultName).toHaveValue("");
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(resultName).toHaveValue("250110.134214.col den.001.05.A1.S001_HT3D_0")
+    );
+
+    fireEvent.change(resultName, { target: { value: "cell-A1-start" } });
+    fireEvent.click(screen.getByRole("button", { name: /build result/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Built result\/cell-A1-start\.tif.*with 1 pages/i)).toBeInTheDocument()
+    );
+    expect(dir.files.get("result").files.get("cell-A1-start.tif").writes.length).toBeGreaterThan(0);
   });
 
   it("renders TIFF previews through the raw16 server path without client ArrayBuffer decoding", async () => {

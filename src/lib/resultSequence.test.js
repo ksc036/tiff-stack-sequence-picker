@@ -49,6 +49,42 @@ describe("result sequence builder", () => {
     expect(writes.find((write) => write.name === "stack-selections.csv").text).toContain("b.tif,2,2");
   });
 
+  it("writes the result TIFF with the editable image name", async () => {
+    const files = [
+      sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }))
+    ];
+    const selections = parseStackSelectionsCsv("filename,selected_stack,stack_count\na.tif,1,1\n");
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    const result = await buildResultSequence({ directoryHandle: "root", files, selections, outputName: "cell A1", io });
+
+    expect(writes.find((write) => write.name === "cell A1.tif")).toBeTruthy();
+    expect(result.tiffFilename).toBe("cell A1.tif");
+  });
+
+  it("strips path characters from the editable image name", async () => {
+    const files = [
+      sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }))
+    ];
+    const selections = parseStackSelectionsCsv("filename,selected_stack,stack_count\na.tif,1,1\n");
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    const result = await buildResultSequence({ directoryHandle: "root", files, selections, outputName: "../bad:name.tiff", io });
+
+    expect(writes.find((write) => write.name === ".._bad_name.tiff")).toBeTruthy();
+    expect(result.tiffFilename).toBe(".._bad_name.tiff");
+  });
+
   it("clamps stale saved selections to the closest available stack while building results", async () => {
     const files = [
       sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4], [5, 6, 7, 8]] }))
