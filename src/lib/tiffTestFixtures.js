@@ -1,65 +1,111 @@
-function writeAscii(view, offset, text) {
-  for (let index = 0; index < text.length; index += 1) {
-    view.setUint8(offset + index, text.charCodeAt(index));
+const TYPE_SIZES = new Map([
+  [1, 1], [2, 1], [3, 2], [4, 4], [5, 8], [6, 1], [7, 1],
+  [8, 2], [9, 4], [10, 8], [11, 4], [12, 8], [13, 4]
+]);
+
+function encodeFixtureValues(entry, littleEndian) {
+  const typeSize = TYPE_SIZES.get(entry.type);
+  if (!typeSize) throw new Error(`Unsupported TIFF fixture field type ${entry.type}`);
+
+  if (entry.type === 2) {
+    const value = entry.value.endsWith("\0") ? entry.value : `${entry.value}\0`;
+    return { count: value.length, bytes: Uint8Array.from(value, (character) => character.charCodeAt(0)) };
   }
-}
 
-function shortValue(value) {
-  return { type: 3, count: 1, value };
-}
-
-function shortArrayValue(values, valueOffset) {
-  if (values.length === 1) return shortValue(values[0]);
-  if (values.length * 2 <= 4) {
-    const inlineBytes = [];
-    values.forEach((value) => {
-      inlineBytes.push(value & 0xff, value >> 8);
-    });
-    return { type: 3, count: values.length, inlineBytes };
-  }
-  return { type: 3, count: values.length, value: valueOffset };
-}
-
-function longValue(value) {
-  return { type: 4, count: 1, value };
-}
-
-function normalizeAsciiValue(value) {
-  return value.endsWith("\0") ? value : `${value}\0`;
-}
-
-function asciiValue(value, valueOffset) {
-  const text = value.endsWith("\0") ? value : `${value}\0`;
-  if (text.length > 4) {
-    return {
-      type: 2,
-      count: text.length,
-      value: valueOffset
-    };
-  }
-  return {
-    type: 2,
-    count: text.length,
-    inlineBytes: Array.from(text, (character) => character.charCodeAt(0))
-  };
-}
-
-function writeEntry(view, offset, tag, entry) {
-  view.setUint16(offset, tag, true);
-  view.setUint16(offset + 2, entry.type, true);
-  view.setUint32(offset + 4, entry.count, true);
-  if (entry.inlineBytes) {
-    for (let index = 0; index < 4; index += 1) {
-      view.setUint8(offset + 8 + index, entry.inlineBytes[index] ?? 0);
+  const values = entry.values;
+  const bytes = new Uint8Array(values.length * typeSize);
+  const view = new DataView(bytes.buffer);
+  values.forEach((value, index) => {
+    const offset = index * typeSize;
+    switch (entry.type) {
+      case 1:
+      case 7:
+        view.setUint8(offset, value);
+        break;
+      case 3:
+        view.setUint16(offset, value, littleEndian);
+        break;
+      case 4:
+      case 13:
+        view.setUint32(offset, value, littleEndian);
+        break;
+      case 5:
+        view.setUint32(offset, value[0], littleEndian);
+        view.setUint32(offset + 4, value[1], littleEndian);
+        break;
+      case 6:
+        view.setInt8(offset, value);
+        break;
+      case 8:
+        view.setInt16(offset, value, littleEndian);
+        break;
+      case 9:
+        view.setInt32(offset, value, littleEndian);
+        break;
+      case 10:
+        view.setInt32(offset, value[0], littleEndian);
+        view.setInt32(offset + 4, value[1], littleEndian);
+        break;
+      case 11:
+        view.setFloat32(offset, value, littleEndian);
+        break;
+      case 12:
+        view.setFloat64(offset, value, littleEndian);
+        break;
+      default:
+        throw new Error(`Unsupported TIFF fixture field type ${entry.type}`);
     }
-    return;
-  }
-  if (entry.type === 3 && entry.count === 1) {
-    view.setUint16(offset + 8, entry.value, true);
-    view.setUint16(offset + 10, 0, true);
-  } else {
-    view.setUint32(offset + 8, entry.value, true);
-  }
+  });
+  return { count: values.length, bytes };
+}
+
+function fixtureEntry(tag, type, values, littleEndian) {
+  const encoded = encodeFixtureValues({ type, values }, littleEndian);
+  return { tag, type, ...encoded };
+}
+
+function asciiFixtureEntry(tag, value, littleEndian) {
+  const encoded = encodeFixtureValues({ type: 2, value }, littleEndian);
+  return { tag, type: 2, ...encoded };
+}
+
+function buildMetadataIfd(entries, littleEndian) {
+  const ifd = { entries: [] };
+  entries.forEach((entry) => {
+    if (entry.nestedIfd) {
+      const child = buildMetadataIfd(entry.nestedIfd, littleEndian);
+      ifd.entries.push({ tag: entry.tag, type: entry.type, count: 1, bytes: null, child });
+      return;
+    }
+    const encoded = entry.type === 2
+      ? encodeFixtureValues({ type: entry.type, value: entry.value }, littleEndian)
+      : encodeFixtureValues(entry, littleEndian);
+    ifd.entries.push({ tag: entry.tag, type: entry.type, ...encoded });
+  });
+  return ifd;
+}
+
+function flattenIfds(ifd, result) {
+  result.push(ifd);
+  ifd.entries.forEach((entry) => {
+    if (entry.child) flattenIfds(entry.child, result);
+  });
+}
+
+function writeIfd(view, ifd, littleEndian, nextOffset) {
+  view.setUint16(ifd.offset, ifd.entries.length, littleEndian);
+  ifd.entries.forEach((entry, index) => {
+    const offset = ifd.offset + 2 + index * 12;
+    view.setUint16(offset, entry.tag, littleEndian);
+    view.setUint16(offset + 2, entry.type, littleEndian);
+    view.setUint32(offset + 4, entry.count, littleEndian);
+    if (entry.bytes.length <= 4) {
+      new Uint8Array(view.buffer, view.byteOffset + offset + 8, 4).set(entry.bytes);
+    } else {
+      view.setUint32(offset + 8, entry.valueOffset, littleEndian);
+    }
+  });
+  view.setUint32(ifd.offset + 2 + ifd.entries.length * 12, nextOffset, littleEndian);
 }
 
 export function makeClassicGrayTiff({
@@ -70,73 +116,82 @@ export function makeClassicGrayTiff({
   samplesPerPixel = 1,
   description,
   colorMap,
-  pages = [[0, 64, 128, 255]]
+  pages = [[0, 64, 128, 255]],
+  byteOrder = "II",
+  metadataByPage = []
 } = {}) {
+  if (byteOrder !== "II" && byteOrder !== "MM") throw new Error(`Unsupported TIFF byte order ${byteOrder}`);
+
+  const littleEndian = byteOrder === "II";
   const bytesPerSample = bitsPerSample / 8;
   const pageByteLength = width * height * samplesPerPixel * bytesPerSample;
   const bitsPerSampleValues = Array.from({ length: samplesPerPixel }, () => bitsPerSample);
-  const bitsPerSampleExtraLength = bitsPerSampleValues.length * 2 > 4 ? bitsPerSampleValues.length * 2 : 0;
-  const colorMapExtraLength = colorMap ? colorMap.length * 2 : 0;
-  const descriptionText = description ? normalizeAsciiValue(description) : "";
-  const descriptionExtraLength = descriptionText.length > 4 ? descriptionText.length : 0;
-  const perPageExtraLength = bitsPerSampleExtraLength + colorMapExtraLength + descriptionExtraLength;
-  const entriesPerIfd = 9 + (description ? 1 : 0) + (samplesPerPixel > 1 ? 1 : 0) + (colorMap ? 1 : 0);
-  const ifdByteLength = 2 + entriesPerIfd * 12 + 4;
-  const extraStart = 8 + pages.length * ifdByteLength;
-  const pixelStart = extraStart + pages.length * perPageExtraLength;
-  const totalLength = pixelStart + pages.length * pageByteLength;
-  const buffer = new ArrayBuffer(totalLength);
-  const view = new DataView(buffer);
+  const roots = pages.map((_, pageIndex) => {
+    const entries = [
+      fixtureEntry(256, 4, [width], littleEndian),
+      fixtureEntry(257, 4, [height], littleEndian),
+      fixtureEntry(258, 3, bitsPerSampleValues, littleEndian),
+      fixtureEntry(259, 3, [1], littleEndian),
+      fixtureEntry(262, 3, [photometric], littleEndian),
+      ...(description ? [asciiFixtureEntry(270, description, littleEndian)] : []),
+      fixtureEntry(273, 4, [0], littleEndian),
+      fixtureEntry(277, 3, [samplesPerPixel], littleEndian),
+      fixtureEntry(278, 4, [height], littleEndian),
+      fixtureEntry(279, 4, [pageByteLength], littleEndian),
+      ...(samplesPerPixel > 1 ? [fixtureEntry(284, 3, [1], littleEndian)] : []),
+      ...(colorMap ? [fixtureEntry(320, 3, colorMap, littleEndian)] : [])
+    ];
+    const metadataIfd = buildMetadataIfd(metadataByPage[pageIndex] ?? [], littleEndian);
+    return { entries: [...entries, ...metadataIfd.entries] };
+  });
 
-  writeAscii(view, 0, "II");
-  view.setUint16(2, 42, true);
-  view.setUint32(4, 8, true);
+  const ifds = [];
+  roots.forEach((root) => flattenIfds(root, ifds));
+  let nextOffset = 8;
+  ifds.forEach((ifd) => {
+    ifd.offset = nextOffset;
+    nextOffset += 2 + ifd.entries.length * 12 + 4;
+  });
+
+  ifds.forEach((ifd) => {
+    ifd.entries.forEach((entry) => {
+      if (entry.child) entry.bytes = encodeFixtureValues({ type: entry.type, values: [entry.child.offset] }, littleEndian).bytes;
+      if (entry.bytes.length > 4) {
+        entry.valueOffset = nextOffset;
+        nextOffset += entry.bytes.length;
+      }
+    });
+  });
+
+  const pixelStart = nextOffset;
+  roots.forEach((root, pageIndex) => {
+    const stripOffsetEntry = root.entries.find((entry) => entry.tag === 273);
+    stripOffsetEntry.bytes = encodeFixtureValues({ type: 4, values: [pixelStart + pageIndex * pageByteLength] }, littleEndian).bytes;
+  });
+
+  const buffer = new ArrayBuffer(pixelStart + pages.length * pageByteLength);
+  const view = new DataView(buffer);
+  view.setUint8(0, byteOrder.charCodeAt(0));
+  view.setUint8(1, byteOrder.charCodeAt(1));
+  view.setUint16(2, 42, littleEndian);
+  view.setUint32(4, roots[0]?.offset ?? 0, littleEndian);
+
+  ifds.forEach((ifd) => {
+    const rootIndex = roots.indexOf(ifd);
+    const nextIfd = rootIndex >= 0 && rootIndex < roots.length - 1 ? roots[rootIndex + 1].offset : 0;
+    writeIfd(view, ifd, littleEndian, nextIfd);
+    ifd.entries.forEach((entry) => {
+      if (entry.bytes.length > 4) new Uint8Array(buffer, entry.valueOffset, entry.bytes.length).set(entry.bytes);
+    });
+  });
 
   pages.forEach((page, pageIndex) => {
-    const ifdOffset = 8 + pageIndex * ifdByteLength;
-    const bitsPerSampleOffset = extraStart + pageIndex * perPageExtraLength;
-    const colorMapOffset = bitsPerSampleOffset + bitsPerSampleExtraLength;
-    const descriptionOffset = colorMapOffset + colorMapExtraLength;
     const stripOffset = pixelStart + pageIndex * pageByteLength;
-    view.setUint16(ifdOffset, entriesPerIfd, true);
-    if (bitsPerSampleExtraLength) {
-      bitsPerSampleValues.forEach((value, index) => {
-        view.setUint16(bitsPerSampleOffset + index * 2, value, true);
-      });
-    }
-    if (colorMapExtraLength) {
-      colorMap.forEach((value, index) => {
-        view.setUint16(colorMapOffset + index * 2, value, true);
-      });
-    }
-    if (descriptionExtraLength) {
-      writeAscii(view, descriptionOffset, descriptionText);
-    }
-    const entries = [
-      [256, longValue(width)],
-      [257, longValue(height)],
-      [258, shortArrayValue(bitsPerSampleValues, bitsPerSampleOffset)],
-      [259, shortValue(1)],
-      [262, shortValue(photometric)],
-      ...(description ? [[270, asciiValue(description, descriptionOffset)]] : []),
-      [273, longValue(stripOffset)],
-      [277, shortValue(samplesPerPixel)],
-      [278, longValue(height)],
-      [279, longValue(pageByteLength)],
-      ...(samplesPerPixel > 1 ? [[284, shortValue(1)]] : []),
-      ...(colorMap ? [[320, { type: 3, count: colorMap.length, value: colorMapOffset }]] : [])
-    ];
-    entries.forEach(([tag, entry], entryIndex) => {
-      writeEntry(view, ifdOffset + 2 + entryIndex * 12, tag, entry);
-    });
-    const nextOffset = pageIndex === pages.length - 1 ? 0 : ifdOffset + ifdByteLength;
-    view.setUint32(ifdOffset + 2 + entriesPerIfd * 12, nextOffset, true);
-
     if (bitsPerSample === 8) {
       new Uint8Array(buffer, stripOffset, pageByteLength).set(Uint8Array.from(page));
-    } else {
-      page.forEach((value, index) => view.setUint16(stripOffset + index * 2, value, true));
+      return;
     }
+    page.forEach((value, index) => view.setUint16(stripOffset + index * 2, value, littleEndian));
   });
 
   return buffer;
