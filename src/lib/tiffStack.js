@@ -4,6 +4,7 @@ const TYPE_SIZES = new Map([
   [3, 2],
   [4, 4]
 ]);
+const MAX_IMAGE_DESCRIPTION_BYTES = 16 * 1024 * 1024;
 
 const DECODED_PAGE_TAGS = new Set([
   256,
@@ -45,13 +46,16 @@ function readValue(view, offset, type, littleEndian) {
   throw new Error(`Unsupported TIFF field type ${type}`);
 }
 
-function readEntryValues(view, entryOffset, littleEndian) {
+function readEntryValues(view, entryOffset, littleEndian, filename, tag) {
   const type = view.getUint16(entryOffset + 2, littleEndian);
   const count = view.getUint32(entryOffset + 4, littleEndian);
   const typeSize = TYPE_SIZES.get(type);
   if (!typeSize) throw new Error(`Unsupported TIFF field type ${type}`);
 
   const byteLength = typeSize * count;
+  if (tag === 270 && byteLength > MAX_IMAGE_DESCRIPTION_BYTES) {
+    throw new Error(`${filename} ImageDescription tag 270 exceeds 16 MiB metadata limit`);
+  }
   const valueOffset = byteLength <= 4 ? entryOffset + 8 : view.getUint32(entryOffset + 8, littleEndian);
   const values = [];
   for (let index = 0; index < count; index += 1) {
@@ -142,7 +146,7 @@ export function decodeTiffStack(input, filename = "TIFF file") {
       const entryOffset = ifdOffset + 2 + index * 12;
       const tag = view.getUint16(entryOffset, littleEndian);
       if (!DECODED_PAGE_TAGS.has(tag)) continue;
-      tags.set(tag, readEntryValues(view, entryOffset, littleEndian));
+      tags.set(tag, readEntryValues(view, entryOffset, littleEndian, filename, tag));
     }
 
     const width = getRequiredScalar(tags, 256, "ImageWidth");

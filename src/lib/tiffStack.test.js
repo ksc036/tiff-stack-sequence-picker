@@ -41,6 +41,18 @@ describe("TIFF stack decoding", () => {
     expect([...stack.pages[0].pixels]).toEqual([0, 64, 128, 255]);
   });
 
+  it("rejects oversized ImageDescription metadata before materializing values", () => {
+    const buffer = makeClassicGrayTiff({ description: "abc" });
+    const view = new DataView(buffer);
+    const imageDescriptionEntryOffset = 8 + 2 + 5 * 12;
+    view.setUint32(imageDescriptionEntryOffset + 4, 16 * 1024 * 1024 + 1, true);
+    view.setUint32(imageDescriptionEntryOffset + 8, buffer.byteLength + 1, true);
+
+    expect(() => decodeTiffStack(buffer, "oversized-description.tif")).toThrow(
+      /oversized-description\.tif.*ImageDescription.*tag 270.*16 MiB metadata limit/
+    );
+  });
+
   it("normalizes 16-bit grayscale pages to RGBA for canvas display", () => {
     const stack = decodeTiffStack(
       makeClassicGrayTiff({ bitsPerSample: 16, pages: [[1000, 2000, 3000, 4000]] }),
