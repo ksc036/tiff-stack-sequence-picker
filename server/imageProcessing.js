@@ -1,4 +1,7 @@
 import sharp from "sharp";
+import { parseImageJDisplayRange } from "../src/lib/tiffDisplayRange.js";
+
+export { parseImageJDisplayRange };
 
 export const DEFAULT_MAX_IMAGE_PIXELS = 536_870_912;
 
@@ -47,18 +50,6 @@ function readTiffUInt16(buffer, offset, littleEndian) {
 
 function readTiffUInt32(buffer, offset, littleEndian) {
   return littleEndian ? buffer.readUInt32LE(offset) : buffer.readUInt32BE(offset);
-}
-
-export function parseImageJDisplayRange(description) {
-  if (!description) return null;
-
-  const minMatch = description.match(/(?:^|\n)\s*min\s*=\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
-  const maxMatch = description.match(/(?:^|\n)\s*max\s*=\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
-  const min = Number(minMatch?.[1]);
-  const max = Number(maxMatch?.[1]);
-
-  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
-  return { min, max };
 }
 
 function readAsciiTagValue(buffer, entryOffset, count, littleEndian) {

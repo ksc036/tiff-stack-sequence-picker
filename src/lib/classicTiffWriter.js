@@ -4,6 +4,10 @@ function writeAscii(view, offset, text) {
   }
 }
 
+function normalizeAsciiValue(value) {
+  return value.endsWith("\0") ? value : `${value}\0`;
+}
+
 function writeEntry(view, offset, tag, type, count, value) {
   view.setUint16(offset, tag, true);
   view.setUint16(offset + 2, type, true);
@@ -80,11 +84,22 @@ export function writeClassicGrayTiff(pages) {
   validatePages(pages);
 
   const pixelPages = pages.map(pageBytes);
-  const entriesPerIfd = 9 + (pages[0].samplesPerPixel > 1 ? 1 : 0) + (pages[0].photometric === 3 ? 1 : 0);
+  const includeImageDescriptions = pages.some((page) => page.imageDescription != null);
+  const imageDescriptions = includeImageDescriptions
+    ? pages.map((page) => normalizeAsciiValue(page.imageDescription ?? "ImageJ=1.53e"))
+    : [];
+  const descriptionExtraLength = includeImageDescriptions
+    ? Math.max(...imageDescriptions.map((description) => description.length))
+    : 0;
+  const entriesPerIfd =
+    9 +
+    (pages[0].samplesPerPixel > 1 ? 1 : 0) +
+    (pages[0].photometric === 3 ? 1 : 0) +
+    (includeImageDescriptions ? 1 : 0);
   const ifdByteLength = 2 + entriesPerIfd * 12 + 4;
   const bitsPerSampleExtraLength = pages[0].samplesPerPixel > 1 ? pages[0].samplesPerPixel * 2 : 0;
   const colorMapExtraLength = pages[0].photometric === 3 ? pages[0].colorMap.length * 2 : 0;
-  const perPageExtraLength = bitsPerSampleExtraLength + colorMapExtraLength;
+  const perPageExtraLength = bitsPerSampleExtraLength + colorMapExtraLength + descriptionExtraLength;
   const extraStart = 8 + pages.length * ifdByteLength;
   const pixelStart = extraStart + pages.length * perPageExtraLength;
   const totalPixelBytes = pixelPages.reduce((sum, bytes) => sum + bytes.byteLength, 0);
@@ -100,6 +115,7 @@ export function writeClassicGrayTiff(pages) {
     const ifdOffset = 8 + pageIndex * ifdByteLength;
     const bitsPerSampleOffset = extraStart + pageIndex * perPageExtraLength;
     const colorMapOffset = bitsPerSampleOffset + bitsPerSampleExtraLength;
+    const descriptionOffset = colorMapOffset + colorMapExtraLength;
     const stripByteCount = pixelPages[pageIndex].byteLength;
     if (bitsPerSampleExtraLength) {
       for (let index = 0; index < page.samplesPerPixel; index += 1) {
@@ -111,12 +127,18 @@ export function writeClassicGrayTiff(pages) {
         view.setUint16(colorMapOffset + index * 2, value, true);
       });
     }
+    if (includeImageDescriptions) {
+      writeAscii(view, descriptionOffset, imageDescriptions[pageIndex]);
+    }
     const entries = [
       [256, 4, 1, page.width],
       [257, 4, 1, page.height],
       [258, 3, page.samplesPerPixel, page.samplesPerPixel === 1 ? page.bitsPerSample : bitsPerSampleOffset],
       [259, 3, 1, 1],
       [262, 3, 1, page.photometric],
+      ...(includeImageDescriptions
+        ? [[270, 2, imageDescriptions[pageIndex].length, descriptionOffset]]
+        : []),
       [273, 4, 1, stripOffset],
       [277, 3, 1, page.samplesPerPixel],
       [278, 4, 1, page.height],

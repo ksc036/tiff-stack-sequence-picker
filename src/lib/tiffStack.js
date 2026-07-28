@@ -11,6 +11,7 @@ const DECODED_PAGE_TAGS = new Set([
   258,
   259,
   262,
+  270,
   273,
   277,
   279,
@@ -40,7 +41,7 @@ function readAscii(view, offset, length) {
 function readValue(view, offset, type, littleEndian) {
   if (type === 3) return view.getUint16(offset, littleEndian);
   if (type === 4) return view.getUint32(offset, littleEndian);
-  if (type === 1) return view.getUint8(offset);
+  if (type === 1 || type === 2) return view.getUint8(offset);
   throw new Error(`Unsupported TIFF field type ${type}`);
 }
 
@@ -69,6 +70,17 @@ function getRequiredScalar(tags, tag, label) {
   const value = scalar(tags, tag);
   if (value == null) throw new Error(`Missing required TIFF tag ${label}`);
   return value;
+}
+
+function ascii(tags, tag) {
+  const entry = tags.get(tag);
+  if (!entry || entry.type !== 2) return undefined;
+
+  let value = "";
+  for (const character of entry.values) {
+    value += String.fromCharCode(character);
+  }
+  return value.replace(/\0+$/, "");
 }
 
 function allValuesEqual(values, expected) {
@@ -139,6 +151,7 @@ export function decodeTiffStack(input, filename = "TIFF file") {
     const bitsPerSampleValues = tags.get(258)?.values ?? [bitsPerSample];
     const compression = scalar(tags, 259, 1);
     const photometric = getRequiredScalar(tags, 262, "PhotometricInterpretation");
+    const imageDescription = ascii(tags, 270);
     const samplesPerPixel = scalar(tags, 277, 1);
     const planarConfiguration = scalar(tags, 284, 1);
     const sampleFormat = scalar(tags, 339, 1);
@@ -181,6 +194,7 @@ export function decodeTiffStack(input, filename = "TIFF file") {
       bitsPerSample,
       samplesPerPixel,
       photometric,
+      imageDescription,
       colorMap,
       pixels: bytesToPixels(bytes, bitsPerSample, littleEndian)
     });

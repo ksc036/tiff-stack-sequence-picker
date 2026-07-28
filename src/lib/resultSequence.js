@@ -6,6 +6,7 @@ import {
 } from "./localTiffDirectory.js";
 import { serializeStackSelectionsCsv } from "./stackSelections.js";
 import { decodeTiffStack } from "./tiffStack.js";
+import { formatImageJDisplayRange, parseImageJDisplayRange } from "./tiffDisplayRange.js";
 
 const defaultIo = {
   ensureResultDirectory,
@@ -59,7 +60,11 @@ export async function buildResultSequence({ directoryHandle, files, selections, 
     const stack = decodeTiffStack(await readHandleBuffer(fileHandle), fileHandle.name);
     const selectedStack = clamp(saved.selectedStack, 1, stack.stackCount);
 
-    selectedPages.push(stack.pages[selectedStack - 1]);
+    const selectedPage = stack.pages[selectedStack - 1];
+    selectedPages.push({
+      ...selectedPage,
+      imageDescription: formatImageJDisplayRange(parseImageJDisplayRange(selectedPage.imageDescription))
+    });
     selectedRows.set(fileHandle.name, {
       filename: fileHandle.name,
       selectedStack,

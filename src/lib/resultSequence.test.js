@@ -3,6 +3,7 @@ import { buildResultSequence } from "./resultSequence.js";
 import { makeClassicGrayTiff } from "./tiffTestFixtures.js";
 import { parseStackSelectionsCsv } from "./stackSelections.js";
 import { decodeTiffStack } from "./tiffStack.js";
+import { readGrey16RawFromTiffBuffer } from "../../server/imageProcessing.js";
 
 function sourceFile(name, buffer) {
   return {
@@ -23,6 +24,47 @@ function unreadableSourceFile(name) {
 }
 
 describe("result sequence builder", () => {
+  it("preserves each selected source page's ImageJ display min and max", async () => {
+    const sourceA = makeClassicGrayTiff({
+      bitsPerSample: 16,
+      description: "ImageJ=1.53e\nmin=1000.0\nmax=1010.0",
+      pages: [[1000, 1005, 1010, 2000]]
+    });
+    const sourceB = makeClassicGrayTiff({
+      bitsPerSample: 16,
+      description: "ImageJ=1.53e\nmin=3000.0\nmax=3020.0",
+      pages: [[3000, 3010, 3020, 6000]]
+    });
+    const files = [
+      sourceFile("a.tif", sourceA),
+      sourceFile("b.tif", sourceB)
+    ];
+    const selections = parseStackSelectionsCsv(
+      "filename,selected_stack,stack_count\na.tif,1,1\nb.tif,1,1\n"
+    );
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    await buildResultSequence({ directoryHandle: "root", files, selections, io });
+
+    const output = writes.find((write) => write.name === "selected-stack-sequence.tif").data;
+    const firstPage = await readGrey16RawFromTiffBuffer(Buffer.from(output), { stackNumber: 1 });
+    const secondPage = await readGrey16RawFromTiffBuffer(Buffer.from(output), { stackNumber: 2 });
+
+    expect([firstPage.min, firstPage.max]).toEqual([1000, 1010]);
+    expect([secondPage.min, secondPage.max]).toEqual([3000, 3020]);
+    expect([...new Uint16Array(firstPage.buffer.buffer, firstPage.buffer.byteOffset, firstPage.buffer.byteLength / 2)]).toEqual(
+      [1000, 1005, 1010, 2000]
+    );
+    expect([...new Uint16Array(secondPage.buffer.buffer, secondPage.buffer.byteOffset, secondPage.buffer.byteLength / 2)]).toEqual(
+      [3000, 3010, 3020, 6000]
+    );
+  });
+
   it("writes one selected grayscale page per source file in filename order", async () => {
     const files = [
       sourceFile("b.tif", makeClassicGrayTiff({ pages: [[10, 11, 12, 13], [20, 21, 22, 23]] })),
