@@ -31,11 +31,12 @@ function validateLimits(limits, filename) {
   return resolved;
 }
 
-function readIfdInfo(view, offset, littleEndian, filename, stackNumber) {
-  assertRange(view, offset, 2, `${filename}: stack ${stackNumber} IFD points outside the TIFF file`);
+function readIfdInfo(view, offset, littleEndian, filename, stackNumber, pointerTag) {
+  const ifdContext = Number.isInteger(pointerTag) ? `tag ${pointerTag} IFD` : "IFD";
+  assertRange(view, offset, 2, `${filename}: stack ${stackNumber} ${ifdContext} points outside the TIFF file`);
   const entryCount = view.getUint16(offset, littleEndian);
   const byteLength = 2 + entryCount * 12 + 4;
-  assertRange(view, offset, byteLength, `${filename}: stack ${stackNumber} IFD extends outside the TIFF file`);
+  assertRange(view, offset, byteLength, `${filename}: stack ${stackNumber} ${ifdContext} extends outside the TIFF file`);
   return {
     entryCount,
     nextOffset: view.getUint32(offset + 2 + entryCount * 12, littleEndian)
@@ -126,7 +127,7 @@ function readIfd(view, offset, littleEndian, filename, stackNumber, limits, capt
     throw new Error(`${filename}: stack ${stackNumber} has a metadata IFD cycle at tag ${pointerTag}`);
   }
 
-  const { entryCount } = readIfdInfo(view, offset, littleEndian, filename, stackNumber);
+  const { entryCount } = readIfdInfo(view, offset, littleEndian, filename, stackNumber, pointerTag);
   const nextActiveOffsets = new Set(activeOffsets).add(offset);
   const entries = [];
   for (let index = 0; index < entryCount; index += 1) {
