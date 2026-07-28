@@ -197,6 +197,36 @@ describe("App", () => {
     expect(secondReadCount).toBe(0);
   });
 
+  it("allows opening a new folder while the current TIFF is still loading", async () => {
+    const loadingStarted = deferred();
+    const folderAFile = {
+      ...fileHandle("folder-a.tif", makeClassicGrayTiff()),
+      async getFile() {
+        loadingStarted.resolve();
+        return new Promise(() => {});
+      }
+    };
+    const folderBFile = fileHandle("folder-b.tif", makeClassicGrayTiff());
+    const folderA = directoryHandle([folderAFile]);
+    const folderB = directoryHandle([folderBFile]);
+    window.showDirectoryPicker = vi.fn().mockResolvedValueOnce(folderA).mockResolvedValueOnce(folderB);
+
+    render(<App />);
+
+    const openFolder = screen.getByRole("button", { name: /open folder/i });
+    fireEvent.click(openFolder);
+
+    await loadingStarted.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(openFolder).toBeEnabled();
+
+    fireEvent.click(openFolder);
+
+    await screen.findByText("folder-b.tif");
+    await waitFor(() => expect(screen.getByRole("button", { name: /confirm/i })).toBeEnabled());
+    expect(screen.queryByText("folder-a.tif")).not.toBeInTheDocument();
+  });
+
   it("does not confirm stale decoded TIFF state while the next file is still decoding", async () => {
     const good = fileHandle("a-good.tif", makeClassicGrayTiff());
     const delayed = {

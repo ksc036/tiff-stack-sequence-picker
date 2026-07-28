@@ -474,7 +474,7 @@ export default function App() {
               <PanelLeftClose size={18} aria-hidden="true" />
             )}
           </button>
-          <button className="primary-action" onClick={openFolder} disabled={busy || !supportsDirectoryPicker()}>
+          <button className="primary-action" onClick={openFolder} disabled={folderBusy || !supportsDirectoryPicker()}>
             <FolderOpen size={18} aria-hidden="true" />
             Open Folder
           </button>
