@@ -112,11 +112,19 @@ function numericEntry(tag, type, values) {
 
 function asciiEntry(tag, value) {
   const normalized = normalizeAsciiValue(value);
+  const bytes = new Uint8Array(normalized.length);
+  for (let index = 0; index < normalized.length; index += 1) {
+    const codeUnit = normalized.charCodeAt(index);
+    if (codeUnit > 0x7f) {
+      throw new Error("TIFF ImageDescription supports ASCII characters only");
+    }
+    bytes[index] = codeUnit;
+  }
   return {
     tag,
     type: 2,
-    count: normalized.length,
-    bytes: Uint8Array.from(normalized, (character) => character.charCodeAt(0))
+    count: bytes.byteLength,
+    bytes
   };
 }
 

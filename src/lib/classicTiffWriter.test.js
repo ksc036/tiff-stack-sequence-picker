@@ -120,6 +120,42 @@ describe("classic TIFF writer", () => {
     ]);
   });
 
+  it("round-trips a valid ASCII ImageDescription with a byte-derived count", () => {
+    const imageDescription = "ImageJ=1.53e\nmin=1\nmax=4\nunit=micron";
+    const output = writeClassicGrayTiff([{
+      width: 2,
+      height: 2,
+      bitsPerSample: 8,
+      samplesPerPixel: 1,
+      photometric: 1,
+      pixels: Uint8Array.from([1, 2, 3, 4]),
+      imageDescription
+    }]);
+
+    const metadata = readClassicTiffMetadata(output, { filename: "result.tif" });
+    const descriptionEntry = metadata.firstIfd.entries.find((entry) => entry.tag === 270);
+    const expectedBytes = new TextEncoder().encode(`${imageDescription}\0`);
+
+    expect(descriptionEntry.values).toBe(imageDescription);
+    expect(descriptionEntry.count).toBe(expectedBytes.byteLength);
+    expect([...descriptionEntry.rawBytes]).toEqual([...expectedBytes]);
+  });
+
+  it.each([
+    ["astral", "ImageJ=1.53e\nunit=micron\u{1f52c}"],
+    ["non-ASCII", "ImageJ=1.53e\nunit=\u00b5m"]
+  ])("rejects an unsupported %s ImageDescription", (_kind, imageDescription) => {
+    expect(() => writeClassicGrayTiff([{
+      width: 2,
+      height: 2,
+      bitsPerSample: 8,
+      samplesPerPixel: 1,
+      photometric: 1,
+      pixels: Uint8Array.from([1, 2, 3, 4]),
+      imageDescription
+    }])).toThrow(/ImageDescription.*ASCII/i);
+  });
+
   it("chains pages with variable IFD and metadata value sizes", () => {
     const basePage = {
       width: 2,
