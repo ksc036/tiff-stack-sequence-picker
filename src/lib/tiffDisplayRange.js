@@ -17,3 +17,24 @@ export function formatImageJDisplayRange(range) {
   }
   return lines.join("\n");
 }
+
+export function formatImageJResultDescription({
+  range,
+  pageCount,
+  includeSequenceShape
+}) {
+  const lines = ["ImageJ=1.53e"];
+  if (includeSequenceShape) {
+    lines.push(
+      `images=${pageCount}`,
+      "channels=1",
+      "slices=1",
+      `frames=${pageCount}`,
+      "hyperstack=true"
+    );
+  }
+  if (range) {
+    lines.push(`min=${range.min}`, `max=${range.max}`);
+  }
+  return lines.join("\n");
+}

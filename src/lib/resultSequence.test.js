@@ -3,14 +3,17 @@ import { buildResultSequence } from "./resultSequence.js";
 import { makeClassicGrayTiff } from "./tiffTestFixtures.js";
 import { parseStackSelectionsCsv } from "./stackSelections.js";
 import { decodeTiffStack } from "./tiffStack.js";
+import { readClassicTiffMetadata } from "./tiffMetadata.js";
 import { readGrey16RawFromTiffBuffer } from "../../server/imageProcessing.js";
 
 function sourceFile(name, buffer) {
+  const arrayBuffer = vi.fn(async () => buffer);
   return {
     name,
     async getFile() {
-      return { arrayBuffer: async () => buffer };
-    }
+      return { arrayBuffer };
+    },
+    arrayBuffer
   };
 }
 
@@ -24,23 +27,45 @@ function unreadableSourceFile(name) {
 }
 
 describe("result sequence builder", () => {
-  it("preserves each selected source page's ImageJ display min and max", async () => {
+  it("builds TIFF, CSV, and complete source metadata from selected pages", async () => {
     const sourceA = makeClassicGrayTiff({
       bitsPerSample: 16,
-      description: "ImageJ=1.53e\nmin=1000.0\nmax=1010.0",
-      pages: [[1000, 1005, 1010, 2000]]
+      pages: [
+        [100, 200, 300, 400],
+        [500, 1000, 2000, 4000]
+      ],
+      metadataByPage: [
+        [
+          {
+            tag: 270,
+            type: 2,
+            value: "ImageJ=1.53e\nimages=12\nchannels=1\nslices=12\nframes=1\nmin=1000\nmax=2000"
+          },
+          { tag: 271, type: 2, value: "ScopeCo" },
+          { tag: 272, type: 2, value: "Model A" },
+          { tag: 65000, type: 7, values: [9, 8, 7] },
+          {
+            tag: 34665,
+            type: 4,
+            nestedIfd: [{ tag: 36867, type: 2, value: "2026:07:28 10:11:12" }]
+          }
+        ],
+        [{ tag: 274, type: 3, values: [6] }]
+      ]
     });
     const sourceB = makeClassicGrayTiff({
       bitsPerSample: 16,
-      description: "ImageJ=1.53e\nmin=3000.0\nmax=3020.0",
-      pages: [[3000, 3010, 3020, 6000]]
+      pages: [[2500, 3000, 4000, 5000]],
+      metadataByPage: [[
+        { tag: 270, type: 2, value: "ImageJ=1.53e\nmin=3000\nmax=4000" }
+      ]]
     });
     const files = [
       sourceFile("a.tif", sourceA),
       sourceFile("b.tif", sourceB)
     ];
     const selections = parseStackSelectionsCsv(
-      "filename,selected_stack,stack_count\na.tif,1,1\nb.tif,1,1\n"
+      "filename,selected_stack,stack_count\na.tif,2,2\nb.tif,1,1\n"
     );
     const writes = [];
     const io = {
@@ -49,19 +74,60 @@ describe("result sequence builder", () => {
       writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
     };
 
-    await buildResultSequence({ directoryHandle: "root", files, selections, io });
+    const result = await buildResultSequence({ directoryHandle: "root", files, selections, io });
 
-    const output = writes.find((write) => write.name === "selected-stack-sequence.tif").data;
-    const firstPage = await readGrey16RawFromTiffBuffer(Buffer.from(output), { stackNumber: 1 });
-    const secondPage = await readGrey16RawFromTiffBuffer(Buffer.from(output), { stackNumber: 2 });
+    expect(result).toMatchObject({
+      pageCount: 2,
+      tiffFilename: "selected-stack-sequence.tif",
+      csvFilename: "stack-selections.csv",
+      metadataFilename: "source-metadata.json"
+    });
+    expect(files.map((file) => file.arrayBuffer.mock.calls.length)).toEqual([1, 1]);
 
-    expect([firstPage.min, firstPage.max]).toEqual([1000, 1010]);
-    expect([secondPage.min, secondPage.max]).toEqual([3000, 3020]);
+    const outputTiff = writes.find((write) => write.name === result.tiffFilename).data;
+    const outputMetadata = readClassicTiffMetadata(outputTiff, {
+      filename: result.tiffFilename,
+      selectedStackNumber: 1
+    });
+    const outputDescription = outputMetadata.firstIfd.entries.find((entry) => entry.tag === 270).values;
+
+    expect(outputDescription).toContain("images=2");
+    expect(outputDescription).toContain("slices=1");
+    expect(outputDescription).toContain("frames=2");
+    expect(outputDescription).not.toContain("images=12");
+    expect(outputMetadata.firstIfd.entries.find((entry) => entry.tag === 271).values).toBe("ScopeCo");
+    expect(outputMetadata.firstIfd.entries.find((entry) => entry.tag === 272).values).toBe("Model A");
+    expect(outputMetadata.firstIfd.entries.find((entry) => entry.tag === 274).values).toEqual([6]);
+
+    const firstPage = await readGrey16RawFromTiffBuffer(Buffer.from(outputTiff), { stackNumber: 1 });
+    const secondPage = await readGrey16RawFromTiffBuffer(Buffer.from(outputTiff), { stackNumber: 2 });
+
+    expect([firstPage.min, firstPage.max]).toEqual([1000, 2000]);
+    expect([secondPage.min, secondPage.max]).toEqual([3000, 4000]);
     expect([...new Uint16Array(firstPage.buffer.buffer, firstPage.buffer.byteOffset, firstPage.buffer.byteLength / 2)]).toEqual(
-      [1000, 1005, 1010, 2000]
+      [500, 1000, 2000, 4000]
     );
     expect([...new Uint16Array(secondPage.buffer.buffer, secondPage.buffer.byteOffset, secondPage.buffer.byteLength / 2)]).toEqual(
-      [3000, 3010, 3020, 6000]
+      [2500, 3000, 4000, 5000]
+    );
+
+    const sidecar = JSON.parse(
+      writes.find((write) => write.name === "source-metadata.json").text
+    );
+    expect(sidecar.pages[0]).toMatchObject({
+      outputPage: 1,
+      source: {
+        filename: "a.tif",
+        stackNumber: 2,
+        stackCount: 2,
+        byteOrder: "II"
+      }
+    });
+    expect(sidecar.pages[0].firstIfd.entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ tag: 65000 })])
+    );
+    expect(sidecar.pages[0].firstIfd.nestedIfds[0].ifd.entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ tag: 36867 })])
     );
   });
 
@@ -196,5 +262,51 @@ describe("result sequence builder", () => {
     );
     expect(io.writeBinaryFile).not.toHaveBeenCalled();
     expect(io.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects source metadata over the configured limit before output I/O", async () => {
+    const files = [
+      sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }))
+    ];
+    const selections = parseStackSelectionsCsv("filename,selected_stack,stack_count\na.tif,1,1\n");
+    const io = {
+      ensureResultDirectory: vi.fn(),
+      writeBinaryFile: vi.fn(),
+      writeTextFile: vi.fn()
+    };
+
+    await expect(buildResultSequence({
+      directoryHandle: "root",
+      files,
+      selections,
+      metadataLimits: {
+        maxTagBytes: 3,
+        maxFileMetadataBytes: 1024,
+        maxIfdDepth: 8
+      },
+      io
+    })).rejects.toThrow(/metadata limit/i);
+
+    expect(io.ensureResultDirectory).not.toHaveBeenCalled();
+    expect(io.writeBinaryFile).not.toHaveBeenCalled();
+    expect(io.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the source metadata sidecar cannot be written", async () => {
+    const files = [
+      sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }))
+    ];
+    const selections = parseStackSelectionsCsv("filename,selected_stack,stack_count\na.tif,1,1\n");
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(),
+      writeTextFile: vi.fn(async (_dir, name) => {
+        if (name === "source-metadata.json") throw new Error("metadata write failed");
+      })
+    };
+
+    await expect(
+      buildResultSequence({ directoryHandle: "root", files, selections, io })
+    ).rejects.toThrow(/metadata write failed/i);
   });
 });
