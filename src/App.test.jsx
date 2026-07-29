@@ -474,6 +474,32 @@ describe("App", () => {
     );
   });
 
+  it("reuses the current TIFF canvas while advancing through multiple frames", async () => {
+    const dir = directoryHandle([
+      fileHandle("a-first.tif", makeClassicGrayTiff({ bitsPerSample: 16 })),
+      fileHandle("b-second.tif", makeClassicGrayTiff({ bitsPerSample: 16 })),
+      fileHandle("c-third.tif", makeClassicGrayTiff({ bitsPerSample: 16 })),
+      fileHandle("d-fourth.tif", makeClassicGrayTiff({ bitsPerSample: 16 }))
+    ]);
+    window.showDirectoryPicker = vi.fn(async () => dir);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
+
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    const currentFrame = screen.getByRole("region", { name: /current frame/i });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    const initialCanvas = within(currentFrame).getByLabelText(/tiff preview/i);
+
+    for (const filename of ["b-second.tif", "c-third.tif", "d-fourth.tif"]) {
+      fireEvent.click(confirm);
+      await within(currentFrame).findByText(new RegExp(`${filename} / stack 1`, "i"));
+      await waitFor(() => expect(confirm).toBeEnabled());
+      expect(within(currentFrame).getByLabelText(/tiff preview/i)).toBe(initialCanvas);
+    }
+  });
+
   it("applies a shared zoom focus to both TIFF canvases and resets them together", async () => {
     const first = fileHandle("a-first.tif", makeClassicGrayTiff({ bitsPerSample: 16 }));
     const second = fileHandle("b-second.tif", makeClassicGrayTiff({ bitsPerSample: 16 }));

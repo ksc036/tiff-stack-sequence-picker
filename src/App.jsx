@@ -99,16 +99,14 @@ function TiffCanvas({ title, subtitle, page, zoomScale, zoomFocus, onZoomFocus }
         ) : null}
       </div>
       <div className="canvas-stage">
-        {page ? (
-          <canvas
-            ref={canvasRef}
-            aria-label={`${title} TIFF preview`}
-            onClick={handleCanvasClick}
-            style={canvasStyle}
-          />
-        ) : (
-          <p>No frame loaded</p>
-        )}
+        <canvas
+          ref={canvasRef}
+          aria-label={page ? `${title} TIFF preview` : undefined}
+          hidden={!page}
+          onClick={handleCanvasClick}
+          style={canvasStyle}
+        />
+        {!page ? <p>No frame loaded</p> : null}
       </div>
     </section>
   );
