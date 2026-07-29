@@ -1,8 +1,16 @@
+const IMAGEJ_NUMBER_PATTERN = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?";
+
+function matchNumericLine(description, name) {
+  return description.match(
+    new RegExp(`^[\\t ]*${name}[\\t ]*=[\\t ]*(${IMAGEJ_NUMBER_PATTERN})[\\t ]*\\r?$`, "m")
+  );
+}
+
 export function parseImageJDisplayRange(description) {
   if (!description) return null;
 
-  const minMatch = description.match(/(?:^|\n)\s*min\s*=\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
-  const maxMatch = description.match(/(?:^|\n)\s*max\s*=\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
+  const minMatch = matchNumericLine(description, "min");
+  const maxMatch = matchNumericLine(description, "max");
   const min = Number(minMatch?.[1]);
   const max = Number(maxMatch?.[1]);
 

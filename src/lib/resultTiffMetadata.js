@@ -1,7 +1,34 @@
-const EMBEDDED_STANDARD_TAGS = new Set([
-  269, 271, 272, 274, 282, 283, 285, 286, 287, 296,
-  305, 306, 315, 316, 33432, 34675, 700
+const EMBEDDABLE_STANDARD_TAG_SCHEMAS = new Map([
+  [269, { type: 2, count: "positive", valueKind: "ascii" }],
+  [271, { type: 2, count: "positive", valueKind: "ascii" }],
+  [272, { type: 2, count: "positive", valueKind: "ascii" }],
+  [274, { type: 3, count: 1, valueKind: "orientation" }],
+  [282, { type: 5, count: 1, valueKind: "rational" }],
+  [283, { type: 5, count: 1, valueKind: "rational" }],
+  [285, { type: 2, count: "positive", valueKind: "ascii" }],
+  [286, { type: 5, count: 1, valueKind: "rational" }],
+  [287, { type: 5, count: 1, valueKind: "rational" }],
+  [296, { type: 3, count: 1, valueKind: "resolution-unit" }],
+  [305, { type: 2, count: "positive", valueKind: "ascii" }],
+  [306, { type: 2, count: "positive", valueKind: "ascii" }],
+  [315, { type: 2, count: "positive", valueKind: "ascii" }],
+  [316, { type: 2, count: "positive", valueKind: "ascii" }],
+  [700, { type: 1, count: "positive", valueKind: "bytes" }],
+  [33432, { type: 2, count: "positive", valueKind: "ascii" }],
+  [34675, { type: 7, count: "positive", valueKind: "bytes" }]
 ]);
+
+const IMAGE_DESCRIPTION_SCHEMA = {
+  type: 2,
+  count: "positive",
+  valueKind: "ascii"
+};
+
+const FIRST_IFD_FALLBACK_TAGS = new Set([
+  269, 271, 272, 305, 315, 316, 700, 33432
+]);
+
+const SOURCE_RELATIVE_POINTER_TAGS = new Set([330, 34665, 34853, 40965]);
 
 const WRITER_OWNED_TAGS = new Set([
   256, 257, 258, 259, 262, 270, 273, 277, 278, 279,
@@ -39,6 +66,15 @@ function classifyNestedEntries(ifd, sourceIfd) {
 }
 
 function classifyRootEntry({ entry, sourceIfd, isSelected, selectedTags }) {
+  if (SOURCE_RELATIVE_POINTER_TAGS.has(entry.tag)) {
+    return {
+      sourceIfd,
+      tag: entry.tag,
+      destination: "sidecar-only",
+      reason: "source-relative-pointer"
+    };
+  }
+
   if (WRITER_OWNED_TAGS.has(entry.tag)) {
     return {
       sourceIfd,
@@ -48,13 +84,21 @@ function classifyRootEntry({ entry, sourceIfd, isSelected, selectedTags }) {
     };
   }
 
-  if (EMBEDDED_STANDARD_TAGS.has(entry.tag)) {
+  if (EMBEDDABLE_STANDARD_TAG_SCHEMAS.has(entry.tag)) {
     if (!isSelected && selectedTags.has(entry.tag)) {
       return {
         sourceIfd,
         tag: entry.tag,
         destination: "sidecar-only",
         reason: "shadowed-by-selected-ifd"
+      };
+    }
+    if (!isSelected && !FIRST_IFD_FALLBACK_TAGS.has(entry.tag)) {
+      return {
+        sourceIfd,
+        tag: entry.tag,
+        destination: "sidecar-only",
+        reason: "not-file-level-fallback"
       };
     }
     return {
@@ -71,6 +115,83 @@ function classifyRootEntry({ entry, sourceIfd, isSelected, selectedTags }) {
     destination: "sidecar-only",
     reason: "not-embeddable"
   };
+}
+
+function validationError(entry, context, detail) {
+  return new Error(
+    `${context.filename}: stack ${context.selectedStack} tag ${entry.tag} ${detail}`
+  );
+}
+
+function validateDecodedCount(entry, context) {
+  if (!Array.isArray(entry.values) || entry.values.length !== entry.count) {
+    throw validationError(entry, context, `decoded values must match count ${entry.count}`);
+  }
+}
+
+function validateByteValues(entry, context) {
+  validateDecodedCount(entry, context);
+  if (!entry.values.every((value) => Number.isInteger(value) && value >= 0 && value <= 0xff)) {
+    throw validationError(entry, context, "must contain unsigned byte values");
+  }
+}
+
+function validateRecognizedEntry(entry, schema, context) {
+  if (entry.type !== schema.type) {
+    throw validationError(entry, context, `must use TIFF field type ${schema.type}`);
+  }
+  if (schema.count === "positive") {
+    if (!Number.isSafeInteger(entry.count) || entry.count <= 0) {
+      throw validationError(entry, context, "must have a positive count");
+    }
+  } else if (entry.count !== schema.count) {
+    throw validationError(entry, context, `must have count ${schema.count}`);
+  }
+
+  if (schema.valueKind === "ascii") {
+    if (typeof entry.values !== "string") {
+      throw validationError(entry, context, "must contain an ASCII string");
+    }
+    return;
+  }
+  if (schema.valueKind === "bytes") {
+    validateByteValues(entry, context);
+    return;
+  }
+
+  validateDecodedCount(entry, context);
+  const value = entry.values[0];
+  if (schema.valueKind === "orientation") {
+    if (!Number.isInteger(value) || value < 1 || value > 8) {
+      throw validationError(entry, context, "must contain an integer from 1 through 8");
+    }
+    return;
+  }
+  if (schema.valueKind === "resolution-unit") {
+    if (!Number.isInteger(value) || ![1, 2, 3].includes(value)) {
+      throw validationError(entry, context, "must contain 1, 2, or 3");
+    }
+    return;
+  }
+  if (
+    !value
+    || !Number.isInteger(value.numerator)
+    || !Number.isInteger(value.denominator)
+  ) {
+    throw validationError(entry, context, "must contain one unsigned rational value");
+  }
+  if (value.denominator === 0) {
+    throw validationError(entry, context, "must have a nonzero denominator");
+  }
+}
+
+function validateRecognizedEntries(entries, context) {
+  for (const entry of entries) {
+    const schema = entry.tag === 270
+      ? IMAGE_DESCRIPTION_SCHEMA
+      : EMBEDDABLE_STANDARD_TAG_SCHEMAS.get(entry.tag);
+    if (schema) validateRecognizedEntry(entry, schema, context);
+  }
 }
 
 function normalizeDecodedValue(value) {
@@ -143,6 +264,12 @@ export function classifyResultPageMetadata({
   stackCount,
   outputPage
 }) {
+  const validationContext = { filename, selectedStack };
+  validateRecognizedEntries(metadata.firstIfd.entries, validationContext);
+  if (metadata.selectedIfd !== metadata.firstIfd) {
+    validateRecognizedEntries(metadata.selectedIfd.entries, validationContext);
+  }
+
   const selectedTags = new Set(metadata.selectedIfd.entries.map((entry) => entry.tag));
   const firstClassifications = metadata.firstIfd.entries.map((entry) => classifyRootEntry({
     entry,
@@ -158,9 +285,11 @@ export function classifyResultPageMetadata({
   }));
   const embeddedEntries = [
     ...metadata.firstIfd.entries.filter((entry) =>
-      EMBEDDED_STANDARD_TAGS.has(entry.tag) && !selectedTags.has(entry.tag)
+      FIRST_IFD_FALLBACK_TAGS.has(entry.tag) && !selectedTags.has(entry.tag)
     ),
-    ...metadata.selectedIfd.entries.filter((entry) => EMBEDDED_STANDARD_TAGS.has(entry.tag))
+    ...metadata.selectedIfd.entries.filter((entry) =>
+      EMBEDDABLE_STANDARD_TAG_SCHEMAS.has(entry.tag)
+    )
   ].sort(compareEntries);
 
   return {

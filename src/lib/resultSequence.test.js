@@ -102,7 +102,7 @@ describe("result sequence builder", () => {
     const firstPage = await readGrey16RawFromTiffBuffer(Buffer.from(outputTiff), { stackNumber: 1 });
     const secondPage = await readGrey16RawFromTiffBuffer(Buffer.from(outputTiff), { stackNumber: 2 });
 
-    expect([firstPage.min, firstPage.max]).toEqual([1000, 2000]);
+    expect([firstPage.min, firstPage.max]).toEqual([500, 4000]);
     expect([secondPage.min, secondPage.max]).toEqual([3000, 4000]);
     expect([...new Uint16Array(firstPage.buffer.buffer, firstPage.buffer.byteOffset, firstPage.buffer.byteLength / 2)]).toEqual(
       [500, 1000, 2000, 4000]
@@ -155,6 +155,40 @@ describe("result sequence builder", () => {
       [20, 21, 22, 23]
     ]);
     expect(writes.find((write) => write.name === "stack-selections.csv").text).toContain("b.tif,2,2");
+  });
+
+  it("does not copy page-local first-IFD metadata to a later selected page", async () => {
+    const source = makeClassicGrayTiff({
+      pages: [[1, 2, 3, 4], [5, 6, 7, 8]],
+      metadataByPage: [[
+        { tag: 271, type: 2, value: "ScopeCo" },
+        { tag: 272, type: 2, value: "Model A" },
+        { tag: 274, type: 3, values: [6] }
+      ], []]
+    });
+    const files = [sourceFile("later-page.tif", source)];
+    const selections = parseStackSelectionsCsv(
+      "filename,selected_stack,stack_count\nlater-page.tif,2,2\n"
+    );
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    await buildResultSequence({ directoryHandle: "root", files, selections, io });
+
+    const outputTiff = writes.find((write) => write.name === "selected-stack-sequence.tif").data;
+    const metadata = readClassicTiffMetadata(outputTiff, {
+      filename: "selected-stack-sequence.tif",
+      selectedStackNumber: 1
+    });
+    const outputEntries = new Map(metadata.firstIfd.entries.map((entry) => [entry.tag, entry]));
+
+    expect(outputEntries.has(274)).toBe(false);
+    expect(outputEntries.get(271).values).toBe("ScopeCo");
+    expect(outputEntries.get(272).values).toBe("Model A");
   });
 
   it("uses code-unit filename order for result page provenance", async () => {
@@ -323,6 +357,35 @@ describe("result sequence builder", () => {
       },
       io
     })).rejects.toThrow(/metadata limit/i);
+
+    expect(io.ensureResultDirectory).not.toHaveBeenCalled();
+    expect(io.writeBinaryFile).not.toHaveBeenCalled();
+    expect(io.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed supported metadata with source context before output I/O", async () => {
+    const files = [
+      sourceFile("malformed-description.tif", makeClassicGrayTiff({
+        metadataByPage: [[{ tag: 270, type: 7, values: [1, 2, 3, 4, 5] }]]
+      }))
+    ];
+    const selections = parseStackSelectionsCsv(
+      "filename,selected_stack,stack_count\nmalformed-description.tif,1,1\n"
+    );
+    const io = {
+      ensureResultDirectory: vi.fn(),
+      writeBinaryFile: vi.fn(),
+      writeTextFile: vi.fn()
+    };
+
+    await expect(buildResultSequence({
+      directoryHandle: "root",
+      files,
+      selections,
+      io
+    })).rejects.toThrow(
+      /malformed-description\.tif: stack 1 tag 270 must use TIFF field type 2/
+    );
 
     expect(io.ensureResultDirectory).not.toHaveBeenCalled();
     expect(io.writeBinaryFile).not.toHaveBeenCalled();

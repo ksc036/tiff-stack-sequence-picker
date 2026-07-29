@@ -23,15 +23,16 @@ tags:
 
 ## Context
 
-A selected TIFF page IFD describes that page, but it is not a complete source-metadata boundary. ImageJ, OME, microscope, and acquisition software commonly place file-level descriptions, make/model, calibration, or nested metadata pointers only in the first IFD. Reading only the selected page silently loses that context when a later stack page is exported.
+A selected TIFF page IFD describes that page, but it is not a complete source-metadata boundary. ImageJ, OME, microscope, and acquisition software commonly place file-level descriptions, equipment identity, or nested metadata pointers only in the first IFD. Reading only the selected page silently loses that context when a later stack page is exported.
 
 ## Guidance
 
 Parse the first top-level IFD and the selected page IFD through the strict result-generation metadata path. Preserve their identities instead of flattening them prematurely.
 
-- For embeddable root tags, prefer the selected IFD value when both IFDs contain the same tag.
-- Use a first-IFD value only when the selected IFD omits that safe tag.
-- For ImageJ display range discovery, inspect the selected description first and then fall back to the first-IFD description.
+- Embed every supported selected-IFD tag that passes its tag-specific schema.
+- Fall back to the first IFD only for the explicit file-level descriptive allowlist: document name, make, model, software, artist, host computer, copyright, and XMP.
+- Never fall back to first-IFD orientation, resolution, resolution unit, position, page name, capture time, ICC profile, or ImageJ display range. Their absence in the selected IFD is meaningful.
+- Derive an ImageJ display range only from the selected IFD's supported description. A missing or invalid selected-page range uses the pixel-extrema display fallback.
 - Archive both IFDs and their reachable known nested metadata IFDs in the provenance sidecar.
 - Regenerate structural offsets, links, strip layout, and result sequence dimensions instead of copying them from either source IFD.
 
@@ -41,14 +42,12 @@ const metadata = readClassicTiffMetadata(sourceBuffer, {
   selectedStackNumber
 });
 
-const sourceDescription =
-  getImageDescription(metadata.selectedIfd)
-  ?? getImageDescription(metadata.firstIfd);
+const sourceDescription = getImageDescription(metadata.selectedIfd);
 ```
 
 ## Why This Matters
 
-The first and selected IFDs have different ownership roles: the first often carries file-level acquisition context, while the selected IFD carries page-specific interpretation. Treating the selected IFD as complete can produce a TIFF whose pixels are exact but whose calibration, provenance, display range, or acquisition identity is incomplete. Treating the first IFD as authoritative for every tag can overwrite valid page-specific values.
+The first and selected IFDs have different ownership roles: the first often carries file-level acquisition context, while the selected IFD carries page-specific interpretation. Treating the selected IFD as the complete provenance boundary loses acquisition identity. Treating the first IFD as a default source for page metadata can silently apply page 1's orientation, calibration, capture time, or display range to a different page.
 
 ## When To Apply
 
@@ -59,7 +58,7 @@ The first and selected IFDs have different ownership roles: the first often carr
 
 ## Examples
 
-Suppose the first IFD contains microscope make/model, a file-level ImageJ description, and an EXIF pointer, while the selected third-page IFD contains orientation. The rebuilt page should embed the safe make/model and selected orientation, generate fresh result-level ImageJ dimensions and structural offsets, and retain both original IFDs plus nested EXIF data in the sidecar.
+Suppose the first IFD contains microscope make/model, Orientation 6, an ImageJ description, and an EXIF pointer, while the selected third-page IFD omits orientation and description. The rebuilt page should embed the make/model, omit orientation and display-range values, generate fresh result-level ImageJ dimensions and structural offsets, and retain both original IFDs plus nested EXIF data in the sidecar.
 
 ## Related
 

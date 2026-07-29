@@ -46,22 +46,33 @@ function readValue(view, offset, type, littleEndian) {
   throw new Error(`Unsupported TIFF field type ${type}`);
 }
 
-function readEntryValues(view, entryOffset, littleEndian, filename, tag) {
+function readEntryValues(view, entryOffset, littleEndian) {
   const type = view.getUint16(entryOffset + 2, littleEndian);
   const count = view.getUint32(entryOffset + 4, littleEndian);
   const typeSize = TYPE_SIZES.get(type);
   if (!typeSize) throw new Error(`Unsupported TIFF field type ${type}`);
 
   const byteLength = typeSize * count;
-  if (tag === 270 && byteLength > MAX_IMAGE_DESCRIPTION_BYTES) {
-    throw new Error(`${filename} ImageDescription tag 270 exceeds 16 MiB metadata limit`);
-  }
   const valueOffset = byteLength <= 4 ? entryOffset + 8 : view.getUint32(entryOffset + 8, littleEndian);
   const values = [];
   for (let index = 0; index < count; index += 1) {
     values.push(readValue(view, valueOffset + index * typeSize, type, littleEndian));
   }
   return { type, count, values };
+}
+
+function readOptionalImageDescription(view, entryOffset, littleEndian) {
+  const type = view.getUint16(entryOffset + 2, littleEndian);
+  const count = view.getUint32(entryOffset + 4, littleEndian);
+  if (type !== 2 || count === 0 || count > MAX_IMAGE_DESCRIPTION_BYTES) return undefined;
+
+  const valueOffset = count <= 4
+    ? entryOffset + 8
+    : view.getUint32(entryOffset + 8, littleEndian);
+  if (valueOffset > view.byteLength - count) return undefined;
+
+  const bytes = new Uint8Array(view.buffer, view.byteOffset + valueOffset, count);
+  return new TextDecoder("ascii").decode(bytes).replace(/\0+$/, "");
 }
 
 function scalar(tags, tag, fallback) {
@@ -74,17 +85,6 @@ function getRequiredScalar(tags, tag, label) {
   const value = scalar(tags, tag);
   if (value == null) throw new Error(`Missing required TIFF tag ${label}`);
   return value;
-}
-
-function ascii(tags, tag) {
-  const entry = tags.get(tag);
-  if (!entry || entry.type !== 2) return undefined;
-
-  let value = "";
-  for (const character of entry.values) {
-    value += String.fromCharCode(character);
-  }
-  return value.replace(/\0+$/, "");
 }
 
 function allValuesEqual(values, expected) {
@@ -142,11 +142,16 @@ export function decodeTiffStack(input, filename = "TIFF file") {
     seenOffsets.add(ifdOffset);
     const entryCount = view.getUint16(ifdOffset, littleEndian);
     const tags = new Map();
+    let imageDescription;
     for (let index = 0; index < entryCount; index += 1) {
       const entryOffset = ifdOffset + 2 + index * 12;
       const tag = view.getUint16(entryOffset, littleEndian);
       if (!DECODED_PAGE_TAGS.has(tag)) continue;
-      tags.set(tag, readEntryValues(view, entryOffset, littleEndian, filename, tag));
+      if (tag === 270) {
+        imageDescription = readOptionalImageDescription(view, entryOffset, littleEndian);
+        continue;
+      }
+      tags.set(tag, readEntryValues(view, entryOffset, littleEndian));
     }
 
     const width = getRequiredScalar(tags, 256, "ImageWidth");
@@ -155,7 +160,6 @@ export function decodeTiffStack(input, filename = "TIFF file") {
     const bitsPerSampleValues = tags.get(258)?.values ?? [bitsPerSample];
     const compression = scalar(tags, 259, 1);
     const photometric = getRequiredScalar(tags, 262, "PhotometricInterpretation");
-    const imageDescription = ascii(tags, 270);
     const samplesPerPixel = scalar(tags, 277, 1);
     const planarConfiguration = scalar(tags, 284, 1);
     const sampleFormat = scalar(tags, 339, 1);

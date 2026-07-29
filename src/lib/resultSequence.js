@@ -103,8 +103,7 @@ export async function buildResultSequence({
     });
 
     const selectedPage = stack.pages[selectedStack - 1];
-    const sourceDescription = getImageDescription(metadata.selectedIfd)
-      ?? getImageDescription(metadata.firstIfd);
+    const sourceDescription = getImageDescription(metadata.selectedIfd);
     selectedPages.push({
       ...selectedPage,
       displayRange: parseImageJDisplayRange(sourceDescription),

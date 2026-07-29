@@ -21,12 +21,15 @@ function readTwoPageMetadata() {
         { tag: 700, type: 1, values: [60, 120, 109, 112, 62] },
         { tag: 33432, type: 2, value: "Copyright Lab" },
         { tag: 34675, type: 7, values: [1, 2, 3, 4] },
+        { tag: 330, type: 4, values: [0] },
         { tag: 65000, type: 7, values: [9, 8, 7] },
         {
           tag: 34665,
           type: 4,
           nestedIfd: [{ tag: 36867, type: 2, value: "2026:07:28 10:11:12" }]
-        }
+        },
+        { tag: 34853, type: 4, values: [0] },
+        { tag: 40965, type: 4, values: [0] }
       ],
       [{ tag: 274, type: 3, values: [6] }]
     ]
@@ -48,12 +51,31 @@ function classifyTwoPageMetadata() {
   });
 }
 
+function classifySelectedEntry(entry) {
+  const source = makeClassicGrayTiff({
+    pages: [[1, 2, 3, 4], [5, 6, 7, 8]],
+    metadataByPage: [[], [entry]]
+  });
+  const metadata = readClassicTiffMetadata(source, {
+    filename: "malformed.tif",
+    selectedStackNumber: 2
+  });
+
+  return () => classifyResultPageMetadata({
+    metadata,
+    filename: "malformed.tif",
+    selectedStack: 2,
+    stackCount: 2,
+    outputPage: 1
+  });
+}
+
 describe("result TIFF metadata", () => {
-  it("embeds only safe standard entries and gives selected IFD values precedence", () => {
+  it("embeds selected-page entries and only file-level first-IFD fallbacks", () => {
     const result = classifyTwoPageMetadata();
 
     expect(result.embeddedEntries.map((entry) => entry.tag)).toEqual([
-      271, 274, 282, 283, 296, 305, 306, 315, 316, 700, 33432, 34675
+      271, 274, 305, 315, 316, 700, 33432
     ]);
     expect(result.embeddedEntries.find((entry) => entry.tag === 274).values).toEqual([6]);
     expect(result.sourceRecord.tagClassifications).toHaveLength(
@@ -69,11 +91,73 @@ describe("result TIFF metadata", () => {
       expect.objectContaining({ sourceIfd: "first/34665", tag: 36867, destination: "sidecar-only" }),
       expect.objectContaining({
         sourceIfd: "first",
+        tag: 282,
+        destination: "sidecar-only",
+        reason: "not-file-level-fallback"
+      }),
+      expect.objectContaining({
+        sourceIfd: "first",
         tag: 274,
         destination: "sidecar-only",
         reason: "shadowed-by-selected-ifd"
       })
     ]));
+    expect(result.sourceRecord.tagClassifications.filter(({ tag }) =>
+      [330, 34665, 34853, 40965].includes(tag)
+    )).toEqual([
+      { sourceIfd: "first", tag: 330, destination: "sidecar-only", reason: "source-relative-pointer" },
+      { sourceIfd: "first", tag: 34665, destination: "sidecar-only", reason: "source-relative-pointer" },
+      { sourceIfd: "first", tag: 34853, destination: "sidecar-only", reason: "source-relative-pointer" },
+      { sourceIfd: "first", tag: 40965, destination: "sidecar-only", reason: "source-relative-pointer" }
+    ]);
+  });
+
+  it.each([
+    {
+      name: "ASCII descriptive tag with the wrong type",
+      entry: { tag: 271, type: 7, values: [1] },
+      expected: /tag 271 must use TIFF field type 2/
+    },
+    {
+      name: "Orientation with the wrong type",
+      entry: { tag: 274, type: 2, value: "sideways" },
+      expected: /tag 274 must use TIFF field type 3/
+    },
+    {
+      name: "Orientation with the wrong count",
+      entry: { tag: 274, type: 3, values: [1, 2] },
+      expected: /tag 274 must have count 1/
+    },
+    {
+      name: "Orientation outside its domain",
+      entry: { tag: 274, type: 3, values: [9] },
+      expected: /tag 274 must contain an integer from 1 through 8/
+    },
+    {
+      name: "ResolutionUnit outside its domain",
+      entry: { tag: 296, type: 3, values: [4] },
+      expected: /tag 296 must contain 1, 2, or 3/
+    },
+    {
+      name: "RATIONAL with a zero denominator",
+      entry: { tag: 282, type: 5, values: [[300, 0]] },
+      expected: /tag 282 must have a nonzero denominator/
+    },
+    {
+      name: "XMP with the wrong byte type",
+      entry: { tag: 700, type: 7, values: [1] },
+      expected: /tag 700 must use TIFF field type 1/
+    },
+    {
+      name: "ICC profile with the wrong byte type",
+      entry: { tag: 34675, type: 1, values: [1] },
+      expected: /tag 34675 must use TIFF field type 7/
+    }
+  ])("rejects $name", ({ entry, expected }) => {
+    const classify = classifySelectedEntry(entry);
+
+    expect(classify).toThrow(new RegExp(`malformed\\.tif: stack 2 tag ${entry.tag}`));
+    expect(classify).toThrow(expected);
   });
 
   it("serializes deterministic provenance without typed arrays", () => {
