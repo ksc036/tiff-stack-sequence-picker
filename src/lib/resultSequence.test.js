@@ -157,6 +157,43 @@ describe("result sequence builder", () => {
     expect(writes.find((write) => write.name === "stack-selections.csv").text).toContain("b.tif,2,2");
   });
 
+  it("uses code-unit filename order for result page provenance", async () => {
+    const files = [
+      sourceFile("\u00e4-source.tif", makeClassicGrayTiff({ pages: [[5, 6, 7, 8]] })),
+      sourceFile("z-source.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }))
+    ];
+    const selections = new Map(files.map((file) => [
+      file.name,
+      { filename: file.name, selectedStack: 1, stackCount: 1 }
+    ]));
+    const writes = [];
+    const io = {
+      ensureResultDirectory: vi.fn(async () => "result-dir"),
+      writeBinaryFile: vi.fn(async (dir, name, data) => writes.push({ dir, name, data })),
+      writeTextFile: vi.fn(async (dir, name, text) => writes.push({ dir, name, text }))
+    };
+
+    await buildResultSequence({ directoryHandle: "root", files, selections, io });
+
+    const outputTiff = writes.find((write) => write.name === "selected-stack-sequence.tif").data;
+    const decoded = decodeTiffStack(outputTiff.buffer, "selected-stack-sequence.tif");
+    expect(decoded.pages.map((page) => [...page.pixels])).toEqual([
+      [1, 2, 3, 4],
+      [5, 6, 7, 8]
+    ]);
+
+    const sidecar = JSON.parse(
+      writes.find((write) => write.name === "source-metadata.json").text
+    );
+    expect(sidecar.pages.map(({ outputPage, source }) => ({
+      outputPage,
+      filename: source.filename
+    }))).toEqual([
+      { outputPage: 1, filename: "z-source.tif" },
+      { outputPage: 2, filename: "\u00e4-source.tif" }
+    ]);
+  });
+
   it("writes the result TIFF with the editable image name", async () => {
     const files = [
       sourceFile("a.tif", makeClassicGrayTiff({ pages: [[1, 2, 3, 4]] }))

@@ -29,6 +29,12 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function compareStrings(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function stripTiffExtension(filename) {
   return String(filename ?? "").replace(/\.tiff?$/i, "");
 }
@@ -69,7 +75,7 @@ export async function buildResultSequence({
   const filesByName = new Map(files.map((fileHandle) => [fileHandle.name, fileHandle]));
   const selectedRowsInFileOrder = [...selections.values()]
     .filter((row) => filesByName.has(row.filename))
-    .sort((a, b) => a.filename.localeCompare(b.filename));
+    .sort((a, b) => compareStrings(a.filename, b.filename));
   const selectedRows = new Map();
   const selectedPages = [];
   const sourceRecords = [];
