@@ -59,6 +59,12 @@ The app writes output files to a `result` folder inside the selected TIFF folder
 
 - `<result-name>.tif`
 - `stack-selections.csv`
+- `source-metadata.json`
+
+- `<result-name>.tif` keeps exact selected pixel samples, generated sequence
+  structure, page display ranges, and safe standard reconstruction metadata.
+- `source-metadata.json` stores first-page, selected-page, nested, private, and
+  source-relative metadata with source filename and original stack provenance.
 
 Selections are also saved to `stack-selections.csv` in the source folder while you work, so you can reopen the folder and continue or edit previous choices.
 

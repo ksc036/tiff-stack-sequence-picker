@@ -444,7 +444,7 @@ export default function App() {
       setStatus(
         statusText(
           "ok",
-          `Built result/${result.tiffFilename} and result/${result.csvFilename} with ${result.pageCount} pages.`
+          `Built result/${result.tiffFilename}, result/${result.csvFilename}, and result/${result.metadataFilename} with ${result.pageCount} pages.`
         )
       );
     } catch (error) {

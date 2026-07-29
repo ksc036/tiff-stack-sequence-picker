@@ -386,9 +386,16 @@ describe("App", () => {
     fireEvent.click(build);
 
     await waitFor(() =>
-      expect(screen.getByText(/Built result\/a-selected\.tif.*with 1 pages/i)).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          /Built result\/a-selected\.tif, result\/stack-selections\.csv, and result\/source-metadata\.json with 1 pages/i
+        )
+      ).toBeInTheDocument()
     );
     const resultDir = dir.files.get("result");
+    expect(resultDir.files.get("source-metadata.json").writes[0]).toContain(
+      '"schemaVersion": 1'
+    );
     expect(resultDir.files.get("stack-selections.csv").writes[0]).toBe(
       "filename,selected_stack,stack_count\na-selected.tif,1,1\n"
     );
